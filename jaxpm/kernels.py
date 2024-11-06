@@ -3,16 +3,16 @@ import numpy as np
 
 
 def fftk(shape, symmetric=True, finite=False, dtype=np.float32):
-    """ 
+    """
     Return wave-vectors for a given shape
     """
     k = []
     for d in range(len(shape)):
         kd = np.fft.fftfreq(shape[d])
         kd *= 2 * np.pi
-        kdshape = np.ones(len(shape), dtype='int')
+        kdshape = np.ones(len(shape), dtype="int")
         if symmetric and d == len(shape) - 1:
-            kd = kd[:shape[d] // 2 + 1]
+            kd = kd[: shape[d] // 2 + 1]
         kdshape[d] = len(kd)
         kd = kd.reshape(kdshape)
 
@@ -24,7 +24,7 @@ def fftk(shape, symmetric=True, finite=False, dtype=np.float32):
 def gradient_kernel(kvec, direction, order=1):
     """
     Computes the gradient kernel in the requested direction
-    
+
     Parameters
     -----------
     kvec: list
@@ -65,8 +65,8 @@ def invlaplace_kernel(kvec):
         Complex kernel values
     """
     kk = sum(ki**2 for ki in kvec)
-    kk_nozeros = jnp.where(kk==0, 1, kk) 
-    return - jnp.where(kk==0, 0, 1 / kk_nozeros)
+    kk_nozeros = jnp.where(kk == 0, 1, kk)
+    return -jnp.where(kk == 0, 0, 1 / kk_nozeros)
 
 
 def longrange_kernel(kvec, r_split):
@@ -79,19 +79,19 @@ def longrange_kernel(kvec, r_split):
         List of wave-vectors
     r_split: float
         Splitting radius
-        
+
     Returns
     --------
     wts: array
         Complex kernel values
-    
+
     TODO: @modichirag add documentation
     """
     if r_split != 0:
         kk = sum(ki**2 for ki in kvec)
         return np.exp(-kk * r_split**2)
     else:
-        return 1.
+        return 1.0
 
 
 def cic_compensation(kvec):
@@ -105,14 +105,14 @@ def cic_compensation(kvec):
     -----------
     kvec: list
         List of wave-vectors
-        
+
     Returns:
     --------
     wts: array
         Complex kernel values
     """
     kwts = [np.sinc(kvec[i] / (2 * np.pi)) for i in range(3)]
-    wts = (kwts[0] * kwts[1] * kwts[2])**(-2)
+    wts = (kwts[0] * kwts[1] * kwts[2]) ** (-2)
     return wts
 
 
@@ -139,7 +139,7 @@ def PGD_kernel(kvec, kl, ks):
     ks4 = ks**4
     mask = (kk == 0).nonzero()
     kk[mask] = 1
-    v = jnp.exp(-kl2 / kk) * jnp.exp(-kk**2 / ks4)
+    v = jnp.exp(-kl2 / kk) * jnp.exp(-(kk**2) / ks4)
     imask = (~(kk == 0)).astype(int)
     v *= imask
     return v

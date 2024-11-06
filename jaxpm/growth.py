@@ -52,8 +52,12 @@ def df_de(cosmo, a, epsilon=1e-5):
     \frac{df}{da}(a) = =\frac{3w_a \left( \ln(a-\epsilon)-
     \frac{a-1}{a-\epsilon}\right)}{\ln^2(a-\epsilon)}
     """
-    return (3 * cosmo.wa * (np.log(a - epsilon) - (a - 1) / (a - epsilon)) /
-            np.power(np.log(a - epsilon), 2))
+    return (
+        3
+        * cosmo.wa
+        * (np.log(a - epsilon) - (a - 1) / (a - epsilon))
+        / np.power(np.log(a - epsilon), 2)
+    )
 
 
 def dEa(cosmo, a):
@@ -85,11 +89,15 @@ def dEa(cosmo, a):
     where :math:`f(a)` is the Dark Energy evolution parameter computed
     by :py:meth:`.f_de`.
     """
-    return (0.5 *
-            (-3 * cosmo.Omega_m * np.power(a, -4) -
-             2 * cosmo.Omega_k * np.power(a, -3) +
-             df_de(cosmo, a) * cosmo.Omega_de * np.power(a, f_de(cosmo, a))) /
-            np.power(Esqr(cosmo, a), 0.5))
+    return (
+        0.5
+        * (
+            -3 * cosmo.Omega_m * np.power(a, -4)
+            - 2 * cosmo.Omega_k * np.power(a, -3)
+            + df_de(cosmo, a) * cosmo.Omega_de * np.power(a, f_de(cosmo, a))
+        )
+        / np.power(Esqr(cosmo, a), 0.5)
+    )
 
 
 def growth_factor(cosmo, a):
@@ -146,8 +154,7 @@ def growth_factor_second(cosmo, a):
     factor is not implemented with $\gamma$ parameter.
     """
     if cosmo._flags["gamma_growth"]:
-        raise NotImplementedError(
-            "Gamma growth rate is not implemented for second order growth!")
+        raise NotImplementedError("Gamma growth rate is not implemented for second order growth!")
         return None
     else:
         return _growth_factor_second_ODE(cosmo, a)
@@ -218,8 +225,7 @@ def growth_rate_second(cosmo, a):
     rate is not implemented with $\gamma$ parameter.
     """
     if cosmo._flags["gamma_growth"]:
-        raise NotImplementedError(
-            "Gamma growth factor is not implemented for second order growth!")
+        raise NotImplementedError("Gamma growth factor is not implemented for second order growth!")
         return None
     else:
         return _growth_rate_second_ODE(cosmo, a)
@@ -248,9 +254,9 @@ def _growth_factor_ODE(cosmo, a, log10_amin=-3, steps=128, eps=1e-4):
         atab = np.logspace(log10_amin, 0.0, steps)
 
         def D_derivs(y, x):
-            q = (2.0 - 0.5 *
-                 (Omega_m_a(cosmo, x) +
-                  (1.0 + 3.0 * w(cosmo, x)) * Omega_de_a(cosmo, x))) / x
+            q = (
+                2.0 - 0.5 * (Omega_m_a(cosmo, x) + (1.0 + 3.0 * w(cosmo, x)) * Omega_de_a(cosmo, x))
+            ) / x
             r = 1.5 * Omega_m_a(cosmo, x) / x / x
 
             g1, g2 = y[0]
@@ -259,8 +265,7 @@ def _growth_factor_ODE(cosmo, a, log10_amin=-3, steps=128, eps=1e-4):
             dy2da = [f2, -q * f2 + r * g2 - r * g1**2]
             return np.array([[dy1da[0], dy2da[0]], [dy1da[1], dy2da[1]]])
 
-        y0 = np.array([[atab[0], -3.0 / 7 * atab[0]**2],
-                       [1.0, -6.0 / 7 * atab[0]]])
+        y0 = np.array([[atab[0], -3.0 / 7 * atab[0] ** 2], [1.0, -6.0 / 7 * atab[0]]])
         y = odeint(D_derivs, y0, atab)
 
         # compute second order derivatives growth
@@ -459,7 +464,7 @@ def _growth_rate_gamma(cosmo, a):
 
     see :cite:`2019:Euclid Preparation VII, eqn.32`
     """
-    return Omega_m_a(cosmo, a)**cosmo.gamma
+    return Omega_m_a(cosmo, a) ** cosmo.gamma
 
 
 def Gf(cosmo, a):
@@ -493,7 +498,7 @@ def Gf(cosmo, a):
 
 
 def Gf2(cosmo, a):
-    r""" FastPM second order growth factor function
+    r"""FastPM second order growth factor function
 
     Parameters
     ----------
@@ -522,7 +527,7 @@ def Gf2(cosmo, a):
 
 
 def dGfa(cosmo, a):
-    r""" Derivative of Gf against a
+    r"""Derivative of Gf against a
 
     Parameters
     ----------
@@ -549,15 +554,15 @@ def dGfa(cosmo, a):
     f1 = growth_rate(cosmo, a)
     g1 = growth_factor(cosmo, a)
     D1f = f1 * g1 / a
-    cache = cosmo._workspace['background.growth_factor']
-    f1p = cache['h'] / cache['a'] * cache['g']
-    f1p = interp(np.log(a), np.log(cache['a']), f1p)
+    cache = cosmo._workspace["background.growth_factor"]
+    f1p = cache["h"] / cache["a"] * cache["g"]
+    f1p = interp(np.log(a), np.log(cache["a"]), f1p)
     Ea = E(cosmo, a)
-    return (f1p * a**3 * Ea + D1f * a**3 * dEa(cosmo, a) + 3 * a**2 * Ea * D1f)
+    return f1p * a**3 * Ea + D1f * a**3 * dEa(cosmo, a) + 3 * a**2 * Ea * D1f
 
 
 def dGf2a(cosmo, a):
-    r""" Derivative of Gf2 against a
+    r"""Derivative of Gf2 against a
 
     Parameters
     ----------
@@ -584,8 +589,8 @@ def dGf2a(cosmo, a):
     f2 = growth_rate_second(cosmo, a)
     g2 = growth_factor_second(cosmo, a)
     D2f = f2 * g2 / a
-    cache = cosmo._workspace['background.growth_factor']
-    f2p = cache['h2'] / cache['a'] * cache['g2']
-    f2p = interp(np.log(a), np.log(cache['a']), f2p)
+    cache = cosmo._workspace["background.growth_factor"]
+    f2p = cache["h2"] / cache["a"] * cache["g2"]
+    f2p = interp(np.log(a), np.log(cache["a"]), f2p)
     E = E(cosmo, a)
-    return (f2p * a**3 * E + D2f * a**3 * dEa(cosmo, a) + 3 * a**2 * E * D2f)
+    return f2p * a**3 * E + D2f * a**3 * dEa(cosmo, a) + 3 * a**2 * E * D2f

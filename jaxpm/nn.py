@@ -26,21 +26,21 @@ def _deBoorVectorized(x, t, c, p):
 
 class NeuralSplineFourierFilter(hk.Module):
     """A rotationally invariant filter parameterized by
-  a b-spline with parameters specified by a small NN."""
+    a b-spline with parameters specified by a small NN."""
 
     def __init__(self, n_knots=8, latent_size=16, name=None):
         """
-    n_knots: number of control points for the spline
-    """
+        n_knots: number of control points for the spline
+        """
         super().__init__(name=name)
         self.n_knots = n_knots
         self.latent_size = latent_size
 
     def __call__(self, x, a):
         """
-    x: array, scale, normalized to fftfreq default
-    a: scalar, scale factor
-    """
+        x: array, scale, normalized to fftfreq default
+        a: scalar, scale factor
+        """
 
         net = jnp.sin(hk.Linear(self.latent_size)(jnp.atleast_1d(a)))
         net = jnp.sin(hk.Linear(self.latent_size)(net))
@@ -49,12 +49,11 @@ class NeuralSplineFourierFilter(hk.Module):
         k = hk.Linear(self.n_knots - 1)(net)
 
         # make sure the knots sum to 1 and are in the interval 0,1
-        k = jnp.concatenate([jnp.zeros((1, )), jnp.cumsum(jax.nn.softmax(k))])
+        k = jnp.concatenate([jnp.zeros((1,)), jnp.cumsum(jax.nn.softmax(k))])
 
-        w = jnp.concatenate([jnp.zeros((1, )), w])
+        w = jnp.concatenate([jnp.zeros((1,)), w])
 
         # Augment with repeating points
-        ak = jnp.concatenate([jnp.zeros((3, )), k, jnp.ones((3, ))])
+        ak = jnp.concatenate([jnp.zeros((3,)), k, jnp.ones((3,))])
 
-        return _deBoorVectorized(jnp.clip(x / jnp.sqrt(3), 0, 1 - 1e-4), ak, w,
-                                 3)
+        return _deBoorVectorized(jnp.clip(x / jnp.sqrt(3), 0, 1 - 1e-4), ak, w, 3)
