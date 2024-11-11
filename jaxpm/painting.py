@@ -16,38 +16,36 @@ def cic_paint(mesh, positions, weight=None):
         [
             [
                 [0, 0, 0],
-                [1.0, 0, 0],
-                [0.0, 1, 0],
-                [0.0, 0, 1],
-                [1.0, 1, 0],
-                [1.0, 0, 1],
-                [0.0, 1, 1],
-                [1.0, 1, 1],
+                [1, 0, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+                [1, 1, 0],
+                [1, 0, 1],
+                [0, 1, 1],
+                [1, 1, 1],
             ]
         ]
     )
 
-    neighboor_coords = floor + connection
-    kernel = 1.0 - jnp.abs(positions - neighboor_coords)
+    neighbor_coords = floor + connection
+    kernel = 1.0 - jnp.abs(positions - neighbor_coords)
     kernel = kernel[..., 0] * kernel[..., 1] * kernel[..., 2]
     if weight is not None:
         kernel = jnp.multiply(jnp.expand_dims(weight, axis=-1), kernel)
 
-    neighboor_coords = jnp.mod(
-        neighboor_coords.reshape([-1, 8, 3]).astype("int32"), jnp.array(mesh.shape)
-    )
+    neighbor_coords = jnp.mod(neighbor_coords.reshape([-1, 8, 3]).astype("int32"), jnp.array(mesh.shape))
 
     dnums = jax.lax.ScatterDimensionNumbers(
         update_window_dims=(),
         inserted_window_dims=(0, 1, 2),
         scatter_dims_to_operand_dims=(0, 1, 2),
     )
-    mesh = lax.scatter_add(mesh, neighboor_coords, kernel.reshape([-1, 8]), dnums)
+    mesh = lax.scatter_add(mesh, neighbor_coords, kernel.reshape([-1, 8]), dnums)
     return mesh
 
 
 def cic_read(mesh, positions):
-    """Paints positions onto mesh
+    """Interpolates values from a mesh at given positions
     mesh: [nx, ny, nz]
     positions: [npart, 3]
     """
@@ -57,26 +55,24 @@ def cic_read(mesh, positions):
         [
             [
                 [0, 0, 0],
-                [1.0, 0, 0],
-                [0.0, 1, 0],
-                [0.0, 0, 1],
-                [1.0, 1, 0],
-                [1.0, 0, 1],
-                [0.0, 1, 1],
-                [1.0, 1, 1],
+                [1, 0, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+                [1, 1, 0],
+                [1, 0, 1],
+                [0, 1, 1],
+                [1, 1, 1],
             ]
         ]
     )
 
-    neighboor_coords = floor + connection
-    kernel = 1.0 - jnp.abs(positions - neighboor_coords)
+    neighbor_coords = floor + connection
+    kernel = 1.0 - jnp.abs(positions - neighbor_coords)
     kernel = kernel[..., 0] * kernel[..., 1] * kernel[..., 2]
 
-    neighboor_coords = jnp.mod(neighboor_coords.astype("int32"), jnp.array(mesh.shape))
+    neighbor_coords = jnp.mod(neighbor_coords.astype("int32"), jnp.array(mesh.shape))
 
-    return (
-        mesh[neighboor_coords[..., 0], neighboor_coords[..., 1], neighboor_coords[..., 3]] * kernel
-    ).sum(axis=-1)
+    return (mesh[neighbor_coords[..., 0], neighbor_coords[..., 1], neighbor_coords[..., 2]] * kernel).sum(axis=-1)
 
 
 def cic_paint_2d(mesh, positions, weight):
@@ -95,9 +91,7 @@ def cic_paint_2d(mesh, positions, weight):
     if weight is not None:
         kernel = kernel * weight[..., jnp.newaxis]
 
-    neighboor_coords = jnp.mod(
-        neighboor_coords.reshape([-1, 4, 2]).astype("int32"), jnp.array(mesh.shape)
-    )
+    neighboor_coords = jnp.mod(neighboor_coords.reshape([-1, 4, 2]).astype("int32"), jnp.array(mesh.shape))
 
     dnums = jax.lax.ScatterDimensionNumbers(
         update_window_dims=(), inserted_window_dims=(0, 1), scatter_dims_to_operand_dims=(0, 1)
