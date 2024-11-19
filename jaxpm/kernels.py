@@ -6,19 +6,22 @@ def fftk(shape, symmetric=True, finite=False, dtype=np.float32):
     """
     Return wave-vectors for a given shape
     """
-    k = []
-    for d in range(len(shape)):
+    dims = len(shape)
+
+    kvec = []
+    for d in range(dims):
         kd = np.fft.fftfreq(shape[d])
         kd *= 2 * np.pi
-        kdshape = np.ones(len(shape), dtype="int")
-        if symmetric and d == len(shape) - 1:
+        if symmetric and d == dims - 1:
             kd = kd[: shape[d] // 2 + 1]
-        kdshape[d] = len(kd)
+
+        # for sparse np.meshgrid style broadcasting
+        kdshape = [len(kd) if i == d else 1 for i in range(dims)]
         kd = kd.reshape(kdshape)
 
-        k.append(kd.astype(dtype))
+        kvec.append(kd.astype(dtype))
     del kd, kdshape
-    return k
+    return kvec
 
 
 def gradient_kernel(kvec, direction, order=1):

@@ -1,6 +1,7 @@
 import haiku as hk
 import jax
 import jax.numpy as jnp
+from flax import nnx
 
 
 def _deBoorVectorized(x, t, c, p):
@@ -57,3 +58,18 @@ class NeuralSplineFourierFilter(hk.Module):
         ak = jnp.concatenate([jnp.zeros((3,)), k, jnp.ones((3,))])
 
         return _deBoorVectorized(jnp.clip(x / jnp.sqrt(3), 0, 1 - 1e-4), ak, w, 3)
+
+
+class MLP(nnx.Module):
+    def __init__(self, d_in: int, d_out: int, d_hidden: int, n_hidden: int, rngs: nnx.Rngs, activation=jax.nn.relu):
+        self.linear_in = nnx.Linear(d_in, d_hidden, rngs=rngs)
+        self.linear_hid = [nnx.Linear(d_hidden, d_hidden, rngs=rngs) for _ in range(n_hidden)]
+        self.linear_out = nnx.Linear(d_hidden, d_out, rngs=rngs)
+        self.activation = activation
+
+    def __call__(self, x):
+        x = self.activation(self.linear_in(x))
+        for layer in self.linear_hid:
+            x = self.activation(layer(x))
+        x = self.linear_out(x)
+        return x

@@ -29,9 +29,10 @@ def pm_forces(positions, mesh_shape, delta=None, r_split=0):
     # Computes gravitational potential
     kvec = fftk(mesh_shape)
     pot_k = delta_k * invlaplace_kernel(kvec) * longrange_kernel(kvec, r_split=r_split)
+
     # Computes gravitational forces
     return jnp.stack(
-        [cic_read(jnp.fft.irfftn(-gradient_kernel(kvec, i) * pot_k), positions) for i in range(3)],
+        [cic_read(jnp.fft.irfftn(-gradient_kernel(kvec, i) * pot_k), positions) for i in range(len(kvec))],
         axis=-1,
     )
 
@@ -92,11 +93,7 @@ def linear_field(mesh_shape, box_size, pk, seed):
     """
     kvec = fftk(mesh_shape)
     kmesh = sum((kk / box_size[i] * mesh_shape[i]) ** 2 for i, kk in enumerate(kvec)) ** 0.5
-    pkmesh = (
-        pk(kmesh)
-        * (mesh_shape[0] * mesh_shape[1] * mesh_shape[2])
-        / (box_size[0] * box_size[1] * box_size[2])
-    )
+    pkmesh = pk(kmesh) * (mesh_shape[0] * mesh_shape[1] * mesh_shape[2]) / (box_size[0] * box_size[1] * box_size[2])
 
     field = jax.random.normal(seed, mesh_shape)
     field = jnp.fft.rfftn(field) * pkmesh**0.5
@@ -125,7 +122,7 @@ def make_ode_fn(mesh_shape):
     return nbody_ode
 
 
-def get_ode_fn(cosmo: Cosmology, mesh_shape):
+def make_ode_fn_diffrax(cosmo: Cosmology, mesh_shape):
 
     def nbody_ode(a, state, args):
         """
