@@ -72,6 +72,12 @@ def invlaplace_kernel(kvec):
     return -jnp.where(kk == 0, 0, 1 / kk_nozeros)
 
 
+def invnabla_kernel(kvec):
+    k = jnp.sqrt(sum(ki**2 for ki in kvec))
+    k_nozeros = jnp.where(k == 0, 1, k)
+    return jnp.where(k == 0, 0, 1 / k_nozeros)
+
+
 def longrange_kernel(kvec, r_split):
     """
     Computes a long range kernel
