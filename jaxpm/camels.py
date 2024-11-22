@@ -2,8 +2,14 @@ import os, glob, h5py, tqdm
 import numpy as np
 import jax.numpy as jnp
 
+import jax_cosmo as jc
+
 
 def load_CV_camels_hydro(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None, np_seed=7):
+    """
+    TODO for training of the HPM-"table" network, the gas particles don't actually need to exist in all snapshots
+    """
+
     # list all snapshots
     SNAPSHOTS = glob.glob(os.path.join(CV_SIM, "snapshot_???.hdf5"))
     SNAPSHOTS.sort()
@@ -13,6 +19,8 @@ def load_CV_camels_hydro(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=N
 
     subsample_particles = parts_per_dim is not None
     if subsample_particles:
+        print(f"Selecting {parts_per_dim**3} dark matter (deterministic) and gas (random) particles")
+
         # only consider gas particles that exist for all snapshots
         for i, SNAPSHOT in tqdm.tqdm(
             enumerate(SNAPSHOTS), total=len(SNAPSHOTS), desc="finding unique gas particle indices"
@@ -25,7 +33,6 @@ def load_CV_camels_hydro(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=N
             else:
                 gas_ids_intersect = np.intersect1d(gas_ids_intersect, gas_ids)
 
-        print(f"Selecting {parts_per_dim**3} dark matter (deterministic) and gas (random) particles")
         rng = np.random.default_rng(np_seed)
         gas_sub_ids = rng.choice(gas_ids_intersect, parts_per_dim**3, replace=False)
     else:
@@ -47,24 +54,23 @@ def load_CV_camels_hydro(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=N
             # constants ###############################################################################################
             if i == 0:
                 box_size = data["Header"].attrs["BoxSize"] / 1e3  # size of the snapshot in comoving Mpc/h
-                scale_factor = data["Header"].attrs["Time"]  # scale factor
                 h = data["Header"].attrs["HubbleParam"]  # value of the hubble parameter in 100 km/s/(Mpc/h)
                 masses = data["Header"].attrs["MassTable"] * 1e10  # masses of the particles in Msun/h
                 Omega_m = data["Header"].attrs["Omega0"]
                 Omega_L = data["Header"].attrs["OmegaLambda"]
                 Omega_b = data["Header"].attrs["OmegaBaryon"]
 
-            redshift = data["Header"].attrs["Redshift"]  # reshift of the snapshot
+            redshift = data["Header"].attrs["Redshift"]
+            scale_factor = data["Header"].attrs["Time"]
 
-            scales.append((1.0 / (1 + redshift)))
+            scales.append(scale_factor)
 
             # dark matter #############################################################################################
             dm_pos = data["PartType1/Coordinates"][:] / 1e3  # Mpc/h
             dm_pos *= mesh_per_dim / box_size  # rescaling positions to grid coordinates
             dm_vel = data["PartType1/Velocities"][:]  # peculiar velocities in km/s
-            dm_vel *= mesh_per_dim * (1.0 / (1 + redshift)) / (box_size * 100)
+            dm_vel *= mesh_per_dim * scale_factor / (box_size * 100)
 
-            # TODO implement grid based subsampling
             if subsample_particles:
                 dm_ids = np.argsort(data["PartType1/ParticleIDs"][:] - 1)  # IDs starting from 0
                 dm_pos = dm_pos[dm_ids]
@@ -79,7 +85,7 @@ def load_CV_camels_hydro(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=N
             gas_pos = data["PartType0/Coordinates"][:] / 1e3  # Mpc/h
             gas_pos *= mesh_per_dim / box_size  # rescaling positions to grid coordinates
             gas_vel = data["PartType0/Velocities"][:]  # peculiar velocities in km/s
-            gas_vel *= mesh_per_dim * (1.0 / (1 + redshift)) / (box_size * 100)
+            gas_vel *= mesh_per_dim * scale_factor / (box_size * 100)
             gas_mass = data["PartType0/Masses"][:] * 1e10  # Msun/h
 
             gas_rho = data["/PartType0/Density"][:] * 1e10 * (1e3) ** 3  # (Msun/h)/(Mpc/h)^3
@@ -112,10 +118,17 @@ def load_CV_camels_hydro(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=N
             gas_Ps.append(gas_P)
             gas_Ts.append(gas_T)
 
+    # see https://camels.readthedocs.io/en/latest/parameters.html#cosmological-parameters
+    cosmo = jc.Planck15(
+        Omega_c=Omega_m - Omega_b,
+        Omega_b=Omega_b,
+        n_s=0.9624,
+        h=h,
+        sigma8=0.8,
+    )
+
     out_dict = {
-        # scalars
-        "Omega_m": Omega_m,
-        "Omega_b": Omega_b,
+        "cosmo": cosmo,
         "masses": masses,
         # lists of arrays
         "scales": scales,
@@ -140,7 +153,10 @@ def load_CV_camels_hydro(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=N
 
 
 def subsample_ordered_particles_in_boxes(particles, in_particles=256, out_particles=64):
-    """It's important that the particles are ordered by index"""
+    """
+    It's important that the particles are ordered by index. Adapted from:
+    https://github.com/DifferentiableUniverseInitiative/jaxpm-paper/blob/main/notebooks/dev/CAMELS_Fitting_PosVel.ipynb
+    """
 
     assert in_particles % out_particles == 0
 

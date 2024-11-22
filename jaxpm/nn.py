@@ -3,6 +3,8 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from tqdm import tqdm
+
 
 def _deBoorVectorized(x, t, c, p):
     """
@@ -73,3 +75,14 @@ class MLP(nnx.Module):
             x = self.activation(layer(x))
         x = self.linear_out(x)
         return x
+
+
+def batched_eval(model, in_array, batch_size):
+    assert in_array.ndim == 2
+
+    preds = []
+    for i in tqdm(range(in_array.shape[0] // batch_size)):
+        preds.append(model(in_array[i * batch_size : (i + 1) * batch_size]))
+    preds.append(model(in_array[(i + 1) * batch_size :]))
+
+    return jnp.concatenate(preds, axis=0)
