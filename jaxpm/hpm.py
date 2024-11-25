@@ -32,9 +32,11 @@ def hpm_forces(scale, dm_pos, gas_pos, mesh_shape, cosmo, model, r_split=0):
     gas_preds = model(gas_inputs)
     gas_P, gas_T = 10 ** gas_preds[:, 0], 10 ** gas_preds[:, 1]
 
-    # TODO
+    # TODO what are the correct units?
     # gas_P = gas_P / (1e10 * (1e3) ** 3)
-    gas_P /= 1e10
+    gas_P /= 1e15
+    # gas_P /= 1e14
+    # gas_P /= 1e12
     # gas_P /= 1e19
 
     gas_rho = cic_read(rho_gas, gas_pos)

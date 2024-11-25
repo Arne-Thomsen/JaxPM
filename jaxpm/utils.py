@@ -137,9 +137,7 @@ def gaussian_smoothing(im, sigma):
     sigma: smoothing scale in px
     """
     # Compute k vector
-    kvec = jnp.stack(
-        jnp.meshgrid(jnp.fft.fftfreq(im.shape[0]), jnp.fft.fftfreq(im.shape[1])), axis=-1
-    )
+    kvec = jnp.stack(jnp.meshgrid(jnp.fft.fftfreq(im.shape[0]), jnp.fft.fftfreq(im.shape[1])), axis=-1)
     k = jnp.linalg.norm(kvec, axis=-1)
     # We compute the value of the filter at frequency k
     filter = norm.pdf(k, 0, 1.0 / (2.0 * np.pi * sigma))
