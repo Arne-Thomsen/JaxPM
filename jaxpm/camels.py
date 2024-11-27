@@ -7,11 +7,8 @@ import jax_cosmo as jc
 
 def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None, np_seed=7, return_hydro=True):
     """
-    TODO for training of the HPM-"table" network, the gas particles don't actually need to exist in all snapshots
+    NOTE for training of the HPM-"table" network, the gas particles don't actually need to exist in all snapshots
     """
-
-    if not return_hydro:
-        assert "_DM" in CV_SIM
 
     # list all snapshots
     SNAPSHOTS = glob.glob(os.path.join(CV_SIM, "snapshot_???.hdf5"))
@@ -90,13 +87,11 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
             dm_vel *= np.sqrt(scale_factor)
 
             if subsample_particles:
-                dm_ids = np.argsort(data["PartType1/ParticleIDs"][:] - 1)  # IDs starting from 0
-                dm_pos = subsample_ordered_particles_in_boxes(
-                    dm_pos[dm_ids], in_particles=256, out_particles=parts_per_dim
-                )
-                dm_vel = subsample_ordered_particles_in_boxes(
-                    dm_vel[dm_ids], in_particles=256, out_particles=parts_per_dim
-                )
+                dm_ids = np.argsort(data["PartType1/ParticleIDs"][:])
+                dm_pos = dm_pos[dm_ids]
+                dm_vel = dm_vel[dm_ids]
+                dm_pos = subsample_ordered_particles_in_boxes(dm_pos, in_particles=256, out_particles=parts_per_dim)
+                dm_vel = subsample_ordered_particles_in_boxes(dm_vel, in_particles=256, out_particles=parts_per_dim)
 
             out_dict["dm_poss"].append(dm_pos)
             out_dict["dm_vels"].append(dm_vel)
@@ -127,13 +122,15 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
                 gas_T = gas_U * (1.0 + 4.0 * yhelium) / (1.0 + yhelium + gas_ne) * 1e10 * (2.0 / 3.0) * m_p / k_B
 
                 if subsample_particles:
-                    gas_mask = np.isin(data["PartType0/ParticleIDs"][:], gas_sub_ids)
-                    gas_pos = gas_pos[gas_mask]
-                    gas_vel = gas_vel[gas_mask]
-                    gas_mass = gas_mass[gas_mask]
-                    gas_rho = gas_rho[gas_mask]
-                    gas_P = gas_P[gas_mask]
-                    gas_T = gas_T[gas_mask]
+                    gas_ids = np.argsort(data["PartType0/ParticleIDs"][:])
+                    gas_mask = np.isin(data["PartType0/ParticleIDs"][:][gas_ids], gas_sub_ids)
+
+                    gas_pos = gas_pos[gas_ids][gas_mask]
+                    gas_vel = gas_vel[gas_ids][gas_mask]
+                    gas_mass = gas_mass[gas_ids][gas_mask]
+                    gas_rho = gas_rho[gas_ids][gas_mask]
+                    gas_P = gas_P[gas_ids][gas_mask]
+                    gas_T = gas_T[gas_ids][gas_mask]
 
                 out_dict["gas_poss"].append(gas_pos)
                 out_dict["gas_vels"].append(gas_vel)

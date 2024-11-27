@@ -6,7 +6,7 @@ from jaxpm.kernels import fftk, gradient_kernel, invlaplace_kernel, invnabla_ker
 from jaxpm.painting import cic_paint, cic_read
 
 
-def hpm_forces(scale, dm_pos, gas_pos, mesh_shape, cosmo, model, r_split=0):
+def hpm_table_forces(scale, dm_pos, gas_pos, mesh_shape, cosmo, model, gravity_only=False, r_split=0):
     kvec = fftk(mesh_shape)
 
     rho_dm = cic_paint(jnp.zeros(mesh_shape), dm_pos)
@@ -50,16 +50,72 @@ def hpm_forces(scale, dm_pos, gas_pos, mesh_shape, cosmo, model, r_split=0):
         return nabla_P / jnp.expand_dims(gas_rho, axis=-1)
 
     dm_force = -gravity(dm_pos)
-    gas_force = -gravity(gas_pos) - pressure(gas_pos)
+    gas_force = -gravity(gas_pos)
+    if not gravity_only:
+        gas_force -= pressure(gas_pos)
 
     return dm_force, gas_force
 
 
-def get_hpm_network_ode_fn(model, mesh_shape, cosmo: Cosmology, integrator_type: str = "odeint"):
+def hpm_direct_forces(scale, dm_pos, gas_pos, mesh_shape, cosmo, model, gravity_only=False, r_split=0):
+    kvec = fftk(mesh_shape)
+
+    rho_dm = cic_paint(jnp.zeros(mesh_shape), dm_pos)
+    rho_gas = cic_paint(jnp.zeros(mesh_shape), gas_pos, weight=cosmo.Omega_b / cosmo.Omega_c)
+    rho_tot = rho_dm + rho_gas
+
+    # gravitational potential
+    rho_k_tot = jnp.fft.rfftn(rho_tot)
+    phi_k = rho_k_tot * invlaplace_kernel(kvec) * longrange_kernel(kvec, r_split=r_split)
+
+    def gravity(pos):
+        return jnp.stack(
+            [cic_read(jnp.fft.irfftn(gradient_kernel(kvec, i) * phi_k), pos) for i in range(len(kvec))],
+            axis=-1,
+        )
+
+    # pressure force
+    k = jnp.sqrt(sum((ki / jnp.pi) ** 2 for ki in kvec))
+
+    fscalar_k = rho_k_tot * invnabla_kernel(kvec)
+
+    def pressure(pos):
+        return jnp.stack(
+            [
+                cic_read(jnp.fft.irfftn(gradient_kernel(kvec, i) * fscalar_k * model(k, jnp.atleast_1d(scale))), pos)
+                for i in range(len(kvec))
+            ],
+            axis=-1,
+        )
+
+    dm_force = -gravity(dm_pos)
+    gas_force = -gravity(gas_pos)
+    if not gravity_only:
+        gas_force -= pressure(gas_pos)
+
+    return dm_force, gas_force
+
+
+def get_hpm_network_ode_fn(
+    model,
+    mesh_shape,
+    cosmo: Cosmology,
+    integrator_type: str = "odeint",
+    force_type: str = "table",
+    gravity_only=False,
+):
     def hpm_ode(scale, state):
         dm_pos, dm_vel, gas_pos, gas_vel = state
 
-        dm_force, gas_force = hpm_forces(scale, dm_pos, gas_pos, mesh_shape, cosmo, model)
+        if force_type == "table":
+            dm_force, gas_force = hpm_table_forces(
+                scale, dm_pos, gas_pos, mesh_shape, cosmo, model, gravity_only=gravity_only
+            )
+        elif force_type == "direct":
+            dm_force, gas_force = hpm_direct_forces(
+                scale, dm_pos, gas_pos, mesh_shape, cosmo, model, gravity_only=gravity_only
+            )
+
         # TODO double check these factors
         dm_force *= 1.5 * cosmo.Omega_m
         gas_force *= 1.5 * cosmo.Omega_m
