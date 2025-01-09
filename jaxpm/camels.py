@@ -2,6 +2,7 @@ import os, glob, h5py, tqdm, hdf5plugin
 import numpy as np
 import jax.numpy as jnp
 
+from jaxpm.painting import cic_paint, cic_read
 import jax_cosmo as jc
 
 
@@ -9,6 +10,15 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
     """
     NOTE for training of the HPM-"table" network, the gas particles don't actually need to exist in all snapshots
     """
+
+    # see https://camels.readthedocs.io/en/latest/parameters.html#cosmological-parameters
+    cosmo = jc.Planck15(
+        Omega_c=0.3 - 0.049,
+        Omega_b=0.049,
+        n_s=0.9624,
+        h=0.6711,
+        sigma8=0.8,
+    )
 
     # list all snapshots
     SNAPSHOTS = glob.glob(os.path.join(CV_SIM, "snapshot_???.hdf5"))
@@ -54,6 +64,7 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
                 "gas_vels": [],
                 "gas_masss": [],
                 "gas_rhos": [],
+                "gas_Us": [],
                 "gas_Ts": [],
                 "gas_Ps": [],
             }
@@ -64,13 +75,13 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
             # constants ###############################################################################################
             if i == 0:
                 box_size = data["Header"].attrs["BoxSize"] / 1e3  # size of the snapshot in comoving Mpc/h
-                h = data["Header"].attrs["HubbleParam"]  # value of the hubble parameter in 100 km/s/(Mpc/h)
 
+                # h = data["Header"].attrs["HubbleParam"]  # value of the hubble parameter in 100 km/s/(Mpc/h)
                 # Omega_m = data["Header"].attrs["Omega0"]
                 # Omega_L = data["Header"].attrs["OmegaLambda"]
                 # Omega_b = data["Header"].attrs["OmegaBaryon"]
-                # masses = data["Header"].attrs["MassTable"] * 1e10  # masses of the particles in Msun/h
-                # out_dict["masses"] = masses
+                masses = data["Header"].attrs["MassTable"] * 1e10  # masses of the particles in Msun/h
+                out_dict["masses"] = masses
 
             redshift = data["Header"].attrs["Redshift"]
             scale_factor = data["Header"].attrs["Time"]
@@ -83,7 +94,7 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
 
             dm_vel = data["PartType1/Velocities"][:]  # peculiar velocities in km/s
             dm_vel *= mesh_per_dim * scale_factor / (box_size * 100)
-            # NOTE this factor seems to be included in readgadget.read_block
+            # NOTE this mysterious factor seems to be included in readgadget.read_block
             dm_vel *= np.sqrt(scale_factor)
 
             if subsample_particles:
@@ -102,20 +113,36 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
                 gas_pos *= mesh_per_dim / box_size  # rescaling positions to grid coordinates
 
                 gas_vel = data["PartType0/Velocities"][:]  # peculiar velocities in km/s
-                gas_vel *= mesh_per_dim * scale_factor / (box_size * 100)
-                # NOTE this factor seems to be included in readgadget.read_block
+                gas_vel *= mesh_per_dim * scale_factor / (box_size * 100)  # scale for peculiar, 100 for Hubble
+                # NOTE this mysterious factor seems to be included in readgadget.read_block
                 gas_vel *= np.sqrt(scale_factor)
 
                 gas_mass = data["PartType0/Masses"][:] * 1e10  # Msun/h
-                gas_rho = data["/PartType0/Density"][:] * 1e10 * (1e3) ** 3  # (Msun/h)/(Mpc/h)^3
-                gas_U = data["/PartType0/InternalEnergy"][:]  # (km/s)^2
-                gas_ne = data["/PartType0/ElectronAbundance"][:]
+
+                # density
+                rho_gas = cic_paint(jnp.zeros([mesh_per_dim] * 3), gas_pos, gas_mass)
+                gas_rho = cic_read(rho_gas, gas_pos)
+                gas_rho *= (mesh_per_dim / box_size) ** 3  # (Msun/h)/(Mpc/h)^3
 
                 # pressure
+                gas_U = data["PartType0/InternalEnergy"][:]  # (km/s)^2
+                gas_U *= (mesh_per_dim * scale_factor / (box_size * 100)) ** 2  # rescale like the velocity
+                gas_U *= scale_factor
+
                 gamma = 5.0 / 3.0
-                gas_P = (gamma - 1.0) * gas_U * gas_rho  # units are (Msun/h)*(km/s)^2/(Mpc/h)^3
+                P_gas = cic_paint(
+                    jnp.zeros([mesh_per_dim] * 3), gas_pos, (gamma - 1.0) * gas_U * cosmo.Omega_b / cosmo.Omega_c
+                )  # dark matter particle mass units, not Msun/h
+                # P_gas = cic_paint(jnp.zeros([mesh_per_dim] * 3), gas_pos, (gamma - 1.0) * gas_U * gas_mass)
+                gas_P = cic_read(P_gas, gas_pos)
+                gas_P *= (mesh_per_dim / box_size) ** 3  #  dm_mass*vel^2/pos^3
+
+                # directly from CAMELS
+                # gas_rho = data["PartType0/Density"][:] * 1e10 * (1e3) ** 3  # (Msun/h)/(Mpc/h)^3
+                # gas_P = (gamma - 1.0) * gas_U * gas_rho  #  (Msun/h)*(km/s)^2/(Mpc/h)^3
 
                 # temperature
+                gas_ne = data["PartType0/ElectronAbundance"][:]
                 yhelium = 0.0789
                 k_B = 1.38065e-16  # erg/K - NIST 2010
                 m_p = 1.67262178e-24  # gram  - NIST 2010
@@ -129,6 +156,7 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
                     gas_vel = gas_vel[gas_ids][gas_mask]
                     gas_mass = gas_mass[gas_ids][gas_mask]
                     gas_rho = gas_rho[gas_ids][gas_mask]
+                    gas_U = gas_U[gas_ids][gas_mask]
                     gas_P = gas_P[gas_ids][gas_mask]
                     gas_T = gas_T[gas_ids][gas_mask]
 
@@ -136,19 +164,11 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
                 out_dict["gas_vels"].append(gas_vel)
                 out_dict["gas_masss"].append(gas_mass)
                 out_dict["gas_rhos"].append(gas_rho)
+                out_dict["gas_Us"].append(gas_U)
                 out_dict["gas_Ps"].append(gas_P)
                 out_dict["gas_Ts"].append(gas_T)
 
-    # see https://camels.readthedocs.io/en/latest/parameters.html#cosmological-parameters
-    out_dict["cosmo"] = jc.Planck15(
-        # Omega_c=Omega_m - Omega_b,
-        # Omega_b=Omega_b,
-        Omega_c=0.3 - 0.049,
-        Omega_b=0.049,
-        n_s=0.9624,
-        h=h,
-        sigma8=0.8,
-    )
+    out_dict["cosmo"] = cosmo
 
     # convert lists to jnp.arrays for compatible shapes
     for key, value in out_dict.items():
