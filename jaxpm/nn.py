@@ -4,6 +4,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from tqdm import tqdm
+from typing import Union
 
 
 def _deBoorVectorized(x, knot_positions, control_points, degree):
@@ -123,6 +124,89 @@ class MLP(nnx.Module):
         for layer in self.linear_hid:
             x = self.activation(layer(x))
         x = self.linear_out(x)
+        return x
+
+
+class Flatten(nnx.Module):
+    def __call__(self, x):
+        return x.reshape((x.shape[0], -1))
+
+
+class ResNetBlock3D(nnx.Module):
+    def __init__(
+        self,
+        channels: int,
+        kernel_size: tuple = (3, 3, 3),
+        strides: int = 1,
+        activation=jax.nn.relu,
+        rngs: nnx.Rngs = None,
+    ):
+        self.filters = channels
+        self.strides = strides
+        self.activation = activation
+
+        self.conv1 = nnx.Conv(channels, channels, kernel_size, strides, padding="SAME", rngs=rngs)
+        self.conv2 = nnx.Conv(channels, channels, kernel_size, 1, padding="SAME", rngs=rngs)
+        self.convres = nnx.Conv(channels, channels, (1, 1, 1), strides, padding="SAME", rngs=rngs)
+
+        self.norm1 = nnx.BatchNorm(channels, rngs=rngs)
+        self.norm2 = nnx.BatchNorm(channels, rngs=rngs)
+        self.normres = nnx.BatchNorm(channels, rngs=rngs)
+
+    def __call__(self, x, training: bool = False):
+        residual = x
+        y = self.conv1(x)
+        # y = self.norm1(y, use_running_average=not training)
+        y = self.activation(y)
+        y = self.conv2(y)
+        # y = self.norm2(y, use_running_average=not training)
+
+        if residual.shape != y.shape:
+            residual = self.convres(residual)
+            residual = self.normres(residual, use_running_average=not training)
+            # residual = self.norm(name='norm_proj')(residual)
+
+        return self.activation(residual + y)
+
+
+class ResNet3D(nnx.Module):
+    def __init__(
+        self,
+        d_in: int,
+        d_hidden: int,
+        d_out: int,
+        num_blocks: int,
+        rngs: nnx.Rngs,
+        kernel_size: tuple = (3, 3, 3),
+        strides: int = 1,
+    ):
+        self.conv_in = nnx.Conv(d_in, d_hidden, kernel_size, 1, padding="SAME", rngs=rngs)
+        self.blocks = [ResNetBlock3D(d_hidden, kernel_size, strides, rngs=rngs) for _ in range(num_blocks)]
+        self.conv_out = nnx.Conv(d_hidden, d_out, kernel_size, 1, padding="SAME", rngs=rngs)
+
+        # self.norm = nnx.BatchNorm()
+
+        # self.flatten = Flatten()
+        # # self.linear_hidden = nnx.Linear(d_hidden, d_hidden, rngs=rngs)
+        # # self.linear_out = nnx.Linear(d_out, d_out, rngs=rngs)
+        # # TODO
+        # self.linear_hidden = nnx.Linear(8192, 64, rngs=rngs)
+        # self.linear_out = nnx.Linear(64, d_out, rngs=rngs)
+
+    def __call__(self, x, training: bool = False):
+        x = self.conv_in(x)
+        # x = self.norm(x, use_running_average=not training)
+        x = jax.nn.relu(x)
+        for block in self.blocks:
+            x = block(x, training=training)
+
+        # x = self.flatten(x)
+        # x = self.linear_hidden(x)
+        # x = self.linear_out(x)
+
+        x = self.conv_out(x)
+        x = jnp.squeeze(x)
+
         return x
 
 
