@@ -109,7 +109,9 @@ def compare_particle_evolution(
     assert not (shared_colorbar and individual_colorbars)
     assert positions.ndim == 4
 
-    colors = sns.color_palette("tab10", n_colors=len(positions))
+    n_scales = len(scales)
+    n_runs = len(positions)
+    colors = sns.color_palette("tab10", n_colors=n_runs)
 
     if weights is None:
         vcic_paint = jax.vmap(jax.vmap(cic_paint, in_axes=(None, 0, None)), in_axes=(None, 0, None))
@@ -120,23 +122,25 @@ def compare_particle_evolution(
     if log:
         fields_2d = jnp.log10(fields_2d)
 
+    delta_fields = fields_2d[0] - fields_2d[1:]
+
     if shared_colorbar:
         vmin = vmin if vmin is not None else fields_2d.min()
         vmax = vmax if vmax is not None else fields_2d.max()
 
-    nrows = len(scales)
-    ncols = len(positions)
+    nrows = n_scales
+    ncols = n_runs
     if include_pk:
         ncols += 1
     if include_reference:
-        ncols += 2
+        ncols += 2 + n_runs - 1
 
     fig, ax = plt.subplots(
         nrows=nrows, ncols=ncols, figsize=(2 * ncols, 2 * nrows), constrained_layout=True, sharey="col", sharex="col"
     )
 
-    for i in tqdm(range(len(scales))):
-        for j in range(len(positions)):
+    for i in tqdm(range(n_scales)):
+        for j in range(n_runs):
             label = col_titles[j] if col_titles is not None else None
 
             if individual_colorbars:
@@ -176,39 +180,46 @@ def compare_particle_evolution(
                 )
 
             if include_pk:
+                axis = n_runs
                 k, pk = jit_power_spectrum(fields[j, i])
-                if include_reference:
-                    axis = -3
-                else:
-                    axis = -1
                 ax[i, axis].loglog(k, pk, label=label)
                 ax[i, axis].set(ylabel=r"$P(k)$")
                 ax[0, axis].legend()
                 ax[0, axis].set(title="power spectrum")
-                ax[len(scales) - 1, axis].set(xlabel=r"$k$ [$h \ \mathrm{Mpc}^{-1}$]")
+                ax[n_scales - 1, axis].set(xlabel=r"$k$ [$h \ \mathrm{Mpc}^{-1}$]")
 
-                if include_reference:
-                    if j != 0:
-                        _, pk0 = jit_power_spectrum(fields[0, i])
+            if include_reference and j != 0:
+                # residual map
+                axis = n_runs + j
+                im_delta = ax[i, axis].imshow(
+                    delta_fields[j - 1, i],
+                    cmap=cmap,
+                    vmin=delta_fields.min(),
+                    vmax=delta_fields.max(),
+                )
+                ax[i, axis].set_xticks([])
+                ax[i, axis].set_yticks([])
 
-                        ax[i, -2].axhline(0.0, color=colors[0], linestyle="--")
-                        ax[i, -2].plot(k, pk / pk0 - 1, label=label, color=colors[j])
-                        ax[i, -2].set(xscale="log")
-                        ax[i, -2].set(ylabel=r"$P(k)/P_\text{ref} - 1$")
+                # normalized power spectrum
+                _, pk0 = jit_power_spectrum(fields[0, i])
+                ax[i, -2].axhline(0.0, color=colors[0], linestyle="--")
+                ax[i, -2].plot(k, pk / pk0 - 1, label=label, color=colors[j])
+                ax[i, -2].set(xscale="log")
+                ax[i, -2].set(ylabel=r"$P(k)/P_\text{ref} - 1$")
 
-                        k, pck = jit_cross_correlation(fields[0, i], fields[j, i])
-                        ax[i, -1].axhline(1.0, color=colors[0], linestyle="--")
-                        ax[i, -1].plot(k, pck / jnp.sqrt(pk * pk0), label=label, color=colors[j])
-                        ax[i, -1].set(xscale="log")
+                # normalized cross-correlation
+                k, pck = jit_cross_correlation(fields[0, i], fields[j, i])
+                ax[i, -1].axhline(1.0, color=colors[0], linestyle="--")
+                ax[i, -1].plot(k, pck / jnp.sqrt(pk * pk0), label=label, color=colors[j])
+                ax[i, -1].set(xscale="log")
+                ax[i, -1].set(ylabel=r"$P_\text{cross}(k)/\sqrt{P_\text{ref}(k) P(k)}$")
 
-                        ax[i, -1].set(ylabel=r"$P_\text{cross}(k)/\sqrt{P_\text{ref}(k) P(k)}$")
-
-                    if i == 0:
-                        ax[i, -2].set(title="normalized\n power spectrum")
-                        ax[i, -1].set(title="normalized\n cross-correlation")
-                    if i == len(positions) - 1:
-                        ax[i, -2].set(xlabel=r"$k$ [$h \ \mathrm{Mpc}^{-1}$]")
-                        ax[i, -1].set(xlabel=r"$k$ [$h \ \mathrm{Mpc}^{-1}$]")
+                if i == 0:
+                    ax[i, -2].set(title="normalized\n power spectrum")
+                    ax[i, -1].set(title="normalized\n cross-correlation")
+                if i == n_scales - 1:
+                    ax[i, -2].set(xlabel=r"$k$ [$h \ \mathrm{Mpc}^{-1}$]")
+                    ax[i, -1].set(xlabel=r"$k$ [$h \ \mathrm{Mpc}^{-1}$]")
 
     for i, scale in enumerate(scales):
         ax[i, 0].set_ylabel(f"{scale:.4f}", fontsize=12)
@@ -216,9 +227,21 @@ def compare_particle_evolution(
     if col_titles is not None:
         for j, col_title in enumerate(col_titles):
             ax[0, j].set_title(col_title, fontsize=12)
+            if include_reference and j != 0:
+                ax[0, n_runs + j].set_title("residual\n" + col_title, fontsize=12)
 
     if shared_colorbar:
-        fig.colorbar(im, ax=ax[:, :], orientation="horizontal", shrink=0.8, aspect=20)
+        fig.colorbar(im, ax=ax[:, :n_runs], orientation="horizontal", shrink=0.8, aspect=20, label="log(sum(field))")
+
+    if include_reference:
+        fig.colorbar(
+            im_delta,
+            ax=ax[:, (n_runs + 1) : ((n_runs + 1) + (n_runs - 1))],
+            orientation="horizontal",
+            shrink=0.8,
+            aspect=20,
+            label="log(sum(field_a)) - log(sum(field_b))",
+        )
 
     if title is not None:
         fig.suptitle(title, fontsize=16, y=1.05)
