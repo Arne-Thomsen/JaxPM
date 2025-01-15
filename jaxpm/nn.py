@@ -1,10 +1,11 @@
-import haiku as hk
 import jax
 import jax.numpy as jnp
+
+import haiku as hk
 from flax import nnx
+from jraph import GraphConvolution, GAT
 
 from tqdm import tqdm
-from typing import Union
 
 
 def _deBoorVectorized(x, knot_positions, control_points, degree):
@@ -219,3 +220,93 @@ def batched_eval(model, in_array, batch_size):
     preds.append(model(in_array[(i + 1) * batch_size :]))
 
     return jnp.concatenate(preds, axis=0)
+
+
+class GNN(nnx.Module):
+    def __init__(
+        self,
+        d_in: int,
+        d_out: int,
+        d_hidden: int,
+        n_hidden: int,
+        rngs: nnx.Rngs,
+        activation=jax.nn.relu,
+        normalize=True,
+    ):
+        super().__init__()
+        self.linear_in = nnx.Linear(d_in, d_hidden, rngs=rngs)
+        self.linear_hid = [nnx.Linear(d_hidden, d_hidden, rngs=rngs) for _ in range(n_hidden)]
+        self.linear_out = nnx.Linear(d_hidden, d_out, rngs=rngs)
+        self.activation = activation
+        self.normalize = normalize
+
+        self.graph_convolution = lambda graph, update_node_fn: GraphConvolution(
+            update_node_fn=update_node_fn,
+            symmetric_normalization=self.normalize,
+        )(graph)
+
+    def __call__(self, graph):
+        graph = self.graph_convolution(graph, update_node_fn=lambda n: self.activation(self.linear_in(n)))
+        for linear in self.linear_hid:
+            graph = self.graph_convolution(graph, update_node_fn=lambda n: self.activation(linear(n)))
+        graph = self.graph_convolution(graph, update_node_fn=lambda n: self.linear_out(n))
+
+        return graph
+
+
+class GATGNN(nnx.Module):
+    def __init__(
+        self,
+        d_node: int,
+        d_edge: int,
+        d_query: int,
+        d_out: int,
+        n_hidden: int,
+        rngs: nnx.Rngs,
+        activation=jax.nn.relu,
+    ):
+        super().__init__()
+
+        self.query_in = nnx.Linear(d_node, d_query, rngs=rngs)
+        self.logit_in = nnx.Linear(2 * d_query + d_edge, d_query, rngs=rngs)
+
+        self.query_hid = [nnx.Linear(d_query, d_query, rngs=rngs) for _ in range(n_hidden)]
+        self.logit_hid = [nnx.Linear(2 * d_query + d_edge, d_query, rngs=rngs) for _ in range(n_hidden)]
+
+        self.query_out = nnx.Linear(d_query, d_out, rngs=rngs)
+        self.logit_out = nnx.Linear(2 * d_out + d_edge, d_out, rngs=rngs)
+
+        self.activation = activation
+
+        self.gat = lambda graph, query_layer, logit_layer: GAT(
+            attention_query_fn=self.get_query_fn(query_layer),
+            attention_logit_fn=self.get_logit_fn(logit_layer),
+            node_update_fn=None,
+        )(graph)
+
+    def get_logit_fn(self, layer, apply_activation=False):
+        def logit_fn(sender_features, receiver_features, edge_features):
+            concatenated_features = jnp.concatenate([sender_features, receiver_features, edge_features], axis=-1)
+            logits = layer(concatenated_features)
+            if apply_activation:
+                logits = self.activation(logits)
+            return logits
+
+        return logit_fn
+
+    def get_query_fn(self, layer, apply_activation=False):
+        def query_fn(node_features):
+            query = layer(node_features)
+            if apply_activation:
+                query = self.activation(query)
+            return query
+
+        return query_fn
+
+    def __call__(self, graph):
+        graph = self.gat(graph, self.query_in, self.logit_in)
+        for query, logit in zip(self.query_hid, self.logit_hid):
+            graph = self.gat(graph, query, logit)
+        graph = self.gat(graph, self.query_out, self.logit_out)
+
+        return graph
