@@ -1,11 +1,27 @@
 import jax
 import jax.numpy as jnp
 
+from jaxpm.painting import cic_read
+
 import haiku as hk
 from flax import nnx
+import flax.linen as nn
+
+import jraph
 from jraph import GraphConvolution, GAT
 
 from tqdm import tqdm
+
+
+def batched_eval(model, in_array, batch_size):
+    assert in_array.ndim == 2
+
+    preds = []
+    for i in tqdm(range(in_array.shape[0] // batch_size)):
+        preds.append(model(in_array[i * batch_size : (i + 1) * batch_size]))
+    preds.append(model(in_array[(i + 1) * batch_size :]))
+
+    return jnp.concatenate(preds, axis=0)
 
 
 def _deBoorVectorized(x, knot_positions, control_points, degree):
@@ -120,6 +136,8 @@ class MLP(nnx.Module):
         self.linear_out = nnx.Linear(d_hidden, d_out, rngs=rngs)
         self.activation = activation
 
+        self.d_out = d_out
+
     def __call__(self, x):
         x = self.activation(self.linear_in(x))
         for layer in self.linear_hid:
@@ -128,9 +146,68 @@ class MLP(nnx.Module):
         return x
 
 
-class Flatten(nnx.Module):
+class CNN(nnx.Module):
+
+    def __init__(
+        self,
+        d_in: int,
+        d_hidden: int,
+        d_out: int,
+        num_layers: int,
+        kernel_size: tuple = (3, 3, 3),
+        strides: int = 1,
+        rngs: nnx.Rngs = nnx.Rngs(0),
+        activation=jax.nn.relu,
+    ):
+        self.d_out = d_out
+
+        self.conv_in = nnx.Conv(d_in, d_hidden, kernel_size, strides, padding="SAME", rngs=rngs)
+        self.conv_hidden = [
+            nnx.Conv(d_hidden, d_hidden, kernel_size, strides, padding="SAME", rngs=rngs) for _ in range(num_layers)
+        ]
+        self.conv_out = nnx.Conv(d_hidden, d_out, kernel_size, strides, padding="SAME", rngs=rngs)
+        self.activation = activation
+
     def __call__(self, x):
-        return x.reshape((x.shape[0], -1))
+        x = self.conv_in(x)
+        x = self.activation(x)
+        x = self.conv_out(x)
+
+        return x
+
+
+class HybridNet(nnx.Module):
+    def __init__(
+        self,
+        mlp,
+        cnn,
+        d_out,
+        rngs,
+        batch_axis=False,
+    ):
+        self.mlp = mlp
+        self.cnn = cnn
+        self.linear_out = nnx.Linear(self.mlp.d_out + self.cnn.d_out, d_out, rngs=rngs)
+
+        self.vcic_read = jax.vmap(
+            cic_read,
+            # feature dimension
+            in_axes=(-1, None),
+            out_axes=-1,
+        )
+        if batch_axis:
+            self.vcic_read = jax.vmap(self.vcic_read, in_axes=(0, 0))
+
+    def __call__(self, pos, particle, field):
+        particle = self.mlp(particle)
+
+        field = self.cnn(field)
+        field = self.vcic_read(field, pos)
+
+        x = jnp.concatenate([particle, field], axis=-1)
+        x = self.linear_out(x)
+
+        return x
 
 
 class ResNetBlock3D(nnx.Module):
@@ -168,6 +245,11 @@ class ResNetBlock3D(nnx.Module):
             # residual = self.norm(name='norm_proj')(residual)
 
         return self.activation(residual + y)
+
+
+class Flatten(nnx.Module):
+    def __call__(self, x):
+        return x.reshape((x.shape[0], -1))
 
 
 class ResNet3D(nnx.Module):
@@ -211,21 +293,10 @@ class ResNet3D(nnx.Module):
         return x
 
 
-def batched_eval(model, in_array, batch_size):
-    assert in_array.ndim == 2
-
-    preds = []
-    for i in tqdm(range(in_array.shape[0] // batch_size)):
-        preds.append(model(in_array[i * batch_size : (i + 1) * batch_size]))
-    preds.append(model(in_array[(i + 1) * batch_size :]))
-
-    return jnp.concatenate(preds, axis=0)
-
-
-class GNN(nnx.Module):
+class ConvGNN(nnx.Module):
     def __init__(
         self,
-        d_in: int,
+        d_node: int,
         d_out: int,
         d_hidden: int,
         n_hidden: int,
@@ -234,7 +305,7 @@ class GNN(nnx.Module):
         normalize=True,
     ):
         super().__init__()
-        self.linear_in = nnx.Linear(d_in, d_hidden, rngs=rngs)
+        self.linear_in = nnx.Linear(d_node, d_hidden, rngs=rngs)
         self.linear_hid = [nnx.Linear(d_hidden, d_hidden, rngs=rngs) for _ in range(n_hidden)]
         self.linear_out = nnx.Linear(d_hidden, d_out, rngs=rngs)
         self.activation = activation
@@ -254,7 +325,7 @@ class GNN(nnx.Module):
         return graph
 
 
-class GATGNN(nnx.Module):
+class AttentionGNN(nnx.Module):
     def __init__(
         self,
         d_node: int,
@@ -264,6 +335,9 @@ class GATGNN(nnx.Module):
         n_hidden: int,
         rngs: nnx.Rngs,
         activation=jax.nn.relu,
+        query_activation=False,
+        logit_activation=False,
+        final_projection=False,
     ):
         super().__init__()
 
@@ -273,14 +347,20 @@ class GATGNN(nnx.Module):
         self.query_hid = [nnx.Linear(d_query, d_query, rngs=rngs) for _ in range(n_hidden)]
         self.logit_hid = [nnx.Linear(2 * d_query + d_edge, d_query, rngs=rngs) for _ in range(n_hidden)]
 
-        self.query_out = nnx.Linear(d_query, d_out, rngs=rngs)
-        self.logit_out = nnx.Linear(2 * d_out + d_edge, d_out, rngs=rngs)
+        self.final_projection = final_projection
+        if self.final_projection:
+            self.query_out = nnx.Linear(d_query, d_query, rngs=rngs)
+            self.logit_out = nnx.Linear(2 * d_query + d_edge, d_query, rngs=rngs)
+            self.linear_out = nnx.Linear(d_query, d_out, rngs=rngs)
+        else:
+            self.query_out = nnx.Linear(d_query, d_out, rngs=rngs)
+            self.logit_out = nnx.Linear(2 * d_out + d_edge, d_out, rngs=rngs)
 
         self.activation = activation
 
         self.gat = lambda graph, query_layer, logit_layer: GAT(
-            attention_query_fn=self.get_query_fn(query_layer),
-            attention_logit_fn=self.get_logit_fn(logit_layer),
+            attention_query_fn=self.get_query_fn(query_layer, query_activation),
+            attention_logit_fn=self.get_logit_fn(logit_layer, logit_activation),
             node_update_fn=None,
         )(graph)
 
@@ -303,10 +383,15 @@ class GATGNN(nnx.Module):
 
         return query_fn
 
+    # def get_update_fn(self, layer)
+
     def __call__(self, graph):
         graph = self.gat(graph, self.query_in, self.logit_in)
         for query, logit in zip(self.query_hid, self.logit_hid):
             graph = self.gat(graph, query, logit)
         graph = self.gat(graph, self.query_out, self.logit_out)
+
+        if self.final_projection:
+            graph = graph._replace(nodes=self.linear_out(graph.nodes))
 
         return graph
