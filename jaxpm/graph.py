@@ -31,33 +31,6 @@ def jax_get_knn(points, k, distance_upper_bound=np.inf, boxsize=None, workers=-1
     )
 
 
-# def get_edges(poss, scales, k=4):
-#     if poss.ndim == 3:
-#         assert poss.shape[0] == scales.shape[0]
-
-#     n_node = poss.shape[1]
-
-#     # TODO vectorize this properly
-#     features, senders, receivers = [], [], []
-#     for i in range(poss.shape[0]):
-#         k_dist, k_idx = jax_get_knn(poss[i], k)
-#         feature = k_dist.reshape(-1, 1)
-#         sender = k_idx.reshape(-1)
-#         receiver = jnp.repeat(jnp.arange(n_node, dtype=jnp.int32), k)
-
-#         features.append(feature)
-#         senders.append(sender)
-#         receivers.append(receiver)
-
-#     edges = {}
-#     edges["features"] = jnp.stack(features, axis=0)
-#     edges["senders"] = jnp.stack(senders, axis=0)
-#     edges["receivers"] = jnp.stack(receivers, axis=0)
-#     edges["scales"] = scales
-
-#     return edges
-
-
 def get_edges(poss, scales, k=4, boxsize=None):
     def get_edges_single(pos):
         k_dist, k_idx = jax_get_knn(pos, k, boxsize=boxsize)
@@ -128,48 +101,14 @@ def get_graph_given_edges(scale, edges, rho, fscalar):
     return graph
 
 
-def get_graph(scale, pos, rho, fscalar, k=4, boxsize=None):
-    scale = jax.lax.stop_gradient(scale)
-    pos = jax.lax.stop_gradient(pos)
-    rho = jax.lax.stop_gradient(rho)
-    fscalar = jax.lax.stop_gradient(fscalar)
+def get_graph(scale, pos, rho, fscalar, k=4, boxsize=None, stop_gradient=True):
+    if stop_gradient:
+        scale = jax.lax.stop_gradient(scale)
+        pos = jax.lax.stop_gradient(pos)
+        rho = jax.lax.stop_gradient(rho)
+        fscalar = jax.lax.stop_gradient(fscalar)
 
     edges = get_edges(pos, scale, k, boxsize=boxsize)
     graph = get_graph_given_edges(scale, edges, rho, fscalar)
 
     return graph
-
-
-# def get_graph(scale, pos, rho, fscalar, k=4, boxsize=None):
-#     scale = jax.lax.stop_gradient(scale)
-#     pos = jax.lax.stop_gradient(pos)
-#     rho = jax.lax.stop_gradient(rho)
-#     fscalar = jax.lax.stop_gradient(fscalar)
-
-#     print(scale.shape)
-#     print(pos.shape)
-#     print(rho.shape)
-#     print(fscalar.shape)
-
-#     n_node = pos.shape[0]
-#     n_edge = k * n_node
-
-#     k_dist, k_idx = jax_get_knn(pos, k, boxsize=boxsize)
-
-#     node_features = jnp.stack([jnp.tile(scale, n_node), jnp.log10(rho), jnp.arcsinh(fscalar / 100)], axis=-1)
-#     edge_features = k_dist.reshape(-1, 1)
-
-#     senders = k_idx.reshape(-1)
-#     receivers = jnp.repeat(jnp.arange(n_node, dtype=jnp.int32), k)
-
-#     graph = jraph.GraphsTuple(
-#         nodes=node_features,
-#         edges=edge_features,
-#         senders=senders,
-#         receivers=receivers,
-#         n_node=n_node,
-#         n_edge=n_edge,
-#         globals=None,
-#     )
-
-#     return graph

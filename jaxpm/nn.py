@@ -6,8 +6,6 @@ from jaxpm.painting import cic_read
 import haiku as hk
 from flax import nnx
 import flax.linen as nn
-
-import jraph
 from jraph import GraphConvolution, GAT
 
 from tqdm import tqdm
@@ -147,7 +145,6 @@ class MLP(nnx.Module):
 
 
 class CNN(nnx.Module):
-
     def __init__(
         self,
         d_in: int,
