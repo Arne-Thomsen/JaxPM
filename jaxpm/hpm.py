@@ -24,8 +24,13 @@ def hpm_forces(
 ):
     kvec = fftk(mesh_shape)
 
-    rho_dm = cic_paint(jnp.zeros(mesh_shape), dm_pos)
-    rho_gas = cic_paint(jnp.zeros(mesh_shape), gas_pos, weight=cosmo.Omega_b / cosmo.Omega_c)
+    N_dm = cic_paint(jnp.zeros(mesh_shape), dm_pos)
+    N_gas = cic_paint(jnp.zeros(mesh_shape), gas_pos)
+    gas_N = cic_read(N_gas, gas_pos)
+
+    # assume identical mass for all particles [dm_mass particle]
+    rho_dm = N_dm
+    rho_gas = N_gas * (cosmo.Omega_b / cosmo.Omega_c)
     rho_tot = rho_dm + rho_gas
 
     # gravitational potential
@@ -43,16 +48,20 @@ def hpm_forces(
 
     # pressure force
     if not gravity_only:
-        gas_rho_tot = cic_read(rho_tot, gas_pos)
+        gas_rho = cic_read(rho_gas, gas_pos)
 
-        fscalar_tot = jnp.fft.irfftn(rho_k_tot * invnabla_kernel(kvec))
-        gas_fscalar = cic_read(fscalar_tot, gas_pos)
+        rho_gas_k = jnp.fft.rfftn(rho_gas)
+        fscalar_gas = jnp.fft.irfftn(rho_gas_k * invnabla_kernel(kvec))
+        gas_fscalar = cic_read(fscalar_gas, gas_pos)
+
+        # gas_rho = cic_read(rho_tot, gas_pos)
+        # gas_fscalar = cic_read(jnp.fft.irfftn(rho_k_tot * invnabla_kernel(kvec)), gas_pos)
 
         if architecture == "mlp":
             gas_inputs = jnp.stack(
                 [
                     jnp.tile(scale, gas_pos.shape[0]),
-                    jnp.log10(gas_rho_tot),
+                    jnp.log10(gas_rho),
                     jnp.arcsinh(gas_fscalar / 100),
                 ],
                 axis=-1,
@@ -68,7 +77,7 @@ def hpm_forces(
 
         elif architecture == "mlp+cnn":
             particle_input = jnp.stack(
-                [jnp.tile(scale, gas_pos.shape[0]), jnp.log10(gas_rho_tot), jnp.arcsinh(gas_fscalar / 100)], axis=-1
+                [jnp.tile(scale, gas_pos.shape[0]), jnp.log10(gas_rho), jnp.arcsinh(gas_fscalar / 100)], axis=-1
             )
             field_input = jnp.stack([jnp.log10(rho_tot + 1), jnp.arcsinh(fscalar_tot / 100)], axis=-1)
             gas_P = 10 ** jnp.squeeze(model(gas_pos, particle_input, field_input))
@@ -76,21 +85,21 @@ def hpm_forces(
         elif architecture == "gnn":
             if edges is None:
                 print("On-the-fly graph")
-                graph = jax.lax.stop_gradient(get_graph(scale, gas_pos, gas_rho_tot, gas_fscalar))
+                graph = jax.lax.stop_gradient(get_graph(scale, gas_pos, gas_rho, gas_fscalar))
             else:
                 print("Prebuilt graph")
-                graph = get_graph_given_edges(scale, edges, gas_rho_tot, gas_fscalar)
+                graph = get_graph_given_edges(scale, edges, gas_rho, gas_fscalar)
             gas_P = 10 ** jnp.squeeze(model(graph).nodes)
 
         else:
             raise ValueError(f"Unknown model type {architecture}")
 
-        gas_rho = cic_read(rho_gas, gas_pos)
-        P_k = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), gas_pos, weight=gas_P / gas_rho))
+        P_gas = cic_paint(jnp.zeros(mesh_shape), gas_pos, weight=gas_P / gas_N)
+        P_gas_k = jnp.fft.rfftn(P_gas)
 
         def pressure(pos):
             nabla_P = jnp.stack(
-                [cic_read(jnp.fft.irfftn(gradient_kernel(kvec, i) * P_k), pos) for i in range(len(kvec))],
+                [cic_read(jnp.fft.irfftn(gradient_kernel(kvec, i) * P_gas_k), pos) for i in range(len(kvec))],
                 axis=-1,
             )
             return nabla_P / jnp.expand_dims(gas_rho, axis=-1)
@@ -158,7 +167,8 @@ def hpm_table_forces_temp(
                 [cic_read(jnp.fft.irfftn(gradient_kernel(kvec, i) * P_k_gas), pos) for i in range(len(kvec))],
                 axis=-1,
             )
-            return nabla_P / jnp.expand_dims(gas_rho, axis=-1)
+            # return nabla_P / jnp.expand_dims(gas_rho, axis=-1)
+            return nabla_P
 
         gas_force -= pressure(gas_pos)
 
@@ -182,24 +192,54 @@ def hpm_direct_forces(scale, dm_pos, gas_pos, mesh_shape, cosmo, model, gravity_
             axis=-1,
         )
 
-    # pressure force
-    k = jnp.sqrt(sum((ki / jnp.pi) ** 2 for ki in kvec))
+    dm_force = -gravity(dm_pos)
+    gas_force = -gravity(gas_pos)
 
-    fscalar_k = rho_k_tot * invnabla_kernel(kvec)
+    if not gravity_only:
+        gas_rho = cic_read(rho_gas, gas_pos)
 
-    def pressure(pos):
-        return jnp.stack(
+        rho_gas_k = jnp.fft.rfftn(rho_gas)
+        fscalar_gas = jnp.fft.irfftn(rho_gas_k * invnabla_kernel(kvec))
+        gas_fscalar = cic_read(fscalar_gas, gas_pos)
+
+        gas_inputs = jnp.stack(
             [
-                cic_read(jnp.fft.irfftn(gradient_kernel(kvec, i) * fscalar_k * model(k, jnp.atleast_1d(scale))), pos)
-                for i in range(len(kvec))
+                jnp.tile(scale, gas_pos.shape[0]),
+                jnp.log10(gas_rho),
+                jnp.arcsinh(gas_fscalar / 100),
             ],
             axis=-1,
         )
 
-    dm_force = -gravity(dm_pos)
-    gas_force = -gravity(gas_pos)
-    if not gravity_only:
-        gas_force -= pressure(gas_pos)
+        # def pressure(pos):
+        #     return jnp.stack(
+        #         [
+        #             cic_read(jnp.fft.irfftn(gradient_kernel(kvec, i) * model(k, jnp.atleast_1d(scale))), pos)
+        #             for i in range(len(kvec))
+        #         ],
+        #         axis=-1,
+        #     )
+
+        # gas_force += 10 ** model(gas_inputs)
+        gas_force += model(gas_inputs)
+    # # pressure force
+    # k = jnp.sqrt(sum((ki / jnp.pi) ** 2 for ki in kvec))
+
+    # fscalar_k = rho_k_tot * invnabla_kernel(kvec)
+
+    # def pressure(pos):
+    #     return jnp.stack(
+    #         [
+    #             cic_read(jnp.fft.irfftn(gradient_kernel(kvec, i) * fscalar_k * model(k, jnp.atleast_1d(scale))), pos)
+    #             for i in range(len(kvec))
+    #         ],
+    #         axis=-1,
+    #     )
+
+    # dm_force = -gravity(dm_pos)
+    # gas_force = -gravity(gas_pos)
+    # if not gravity_only:
+    #     gas_force -= pressure(gas_pos)
 
     return dm_force, gas_force
 
@@ -215,6 +255,16 @@ def get_hpm_network_ode_fn(
 ):
     def hpm_ode(scale, state, kwargs):
         dm_pos, dm_vel, gas_pos, gas_vel = state
+
+        # dm_force, gas_force = hpm_direct_forces(
+        #     scale,
+        #     dm_pos,
+        #     gas_pos,
+        #     mesh_shape,
+        #     cosmo,
+        #     model,
+        #     gravity_only=gravity_only,
+        # )
 
         dm_force, gas_force = hpm_forces(
             scale,

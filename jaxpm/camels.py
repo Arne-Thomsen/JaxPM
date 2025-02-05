@@ -110,32 +110,38 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
             # gas #####################################################################################################
             if return_hydro:
                 gas_pos = data["PartType0/Coordinates"][:] / 1e3  # Mpc/h
-                gas_pos *= mesh_per_dim / box_size  # rescaling positions to grid coordinates
+                gas_pos *= mesh_per_dim / box_size  # rescaling positions to grid coordinates pm_len
 
                 gas_vel = data["PartType0/Velocities"][:]  # peculiar velocities in km/s
-                gas_vel *= mesh_per_dim * scale_factor / (box_size * 100)  # scale for peculiar, 100 for Hubble
+                gas_vel *= mesh_per_dim * scale_factor / (box_size * 100)  # pm_vel (scale for peculiar, 100 for Hubble
                 # NOTE this mysterious factor seems to be included in readgadget.read_block
                 gas_vel *= np.sqrt(scale_factor)
 
                 gas_mass = data["PartType0/Masses"][:] * 1e10  # Msun/h
+                gas_mass /= masses[1] # dm_mass per particle
 
                 # density
                 rho_gas = cic_paint(jnp.zeros([mesh_per_dim] * 3), gas_pos, gas_mass)
-                gas_rho = cic_read(rho_gas, gas_pos)
-                gas_rho *= (mesh_per_dim / box_size) ** 3  # (Msun/h)/(Mpc/h)^3
+                gas_rho = cic_read(rho_gas, gas_pos) # dm_mass/(Mpc/h)^3
+                gas_rho *= (mesh_per_dim / box_size) ** 3  # dm_mass/pm_len
 
                 # pressure
                 gas_U = data["PartType0/InternalEnergy"][:]  # (km/s)^2
-                gas_U *= (mesh_per_dim * scale_factor / (box_size * 100)) ** 2  # rescale like the velocity
+                gas_U *= (mesh_per_dim * scale_factor / (box_size * 100)) ** 2  # rescale like the velocity, pm_vel^2
+                # NOTE same mysterious factor as for the velocity
                 gas_U *= scale_factor
 
                 gamma = 5.0 / 3.0
-                P_gas = cic_paint(
-                    jnp.zeros([mesh_per_dim] * 3), gas_pos, (gamma - 1.0) * gas_U * cosmo.Omega_b / cosmo.Omega_c
-                )  # dark matter particle mass units, not Msun/h
+
+                # P_gas = cic_paint(
+                #     jnp.zeros([mesh_per_dim] * 3), gas_pos, (gamma - 1.0) * gas_U * cosmo.Omega_b / cosmo.Omega_c
+                # )  # dark matter particle mass units, not Msun/h
                 # P_gas = cic_paint(jnp.zeros([mesh_per_dim] * 3), gas_pos, (gamma - 1.0) * gas_U * gas_mass)
-                gas_P = cic_read(P_gas, gas_pos)
-                gas_P *= (mesh_per_dim / box_size) ** 3  #  dm_mass*vel^2/pos^3
+
+                # the rho factor is implicitly included in the cic_paint
+                P_gas = cic_paint(jnp.zeros([mesh_per_dim] * 3), gas_pos, (gamma - 1.0) * gas_U * gas_mass)
+                gas_P = cic_read(P_gas, gas_pos) 
+                gas_P *= (mesh_per_dim / box_size) ** 3  #  dm_mass*pm_vel^2/dm_pos^3
 
                 # directly from CAMELS
                 # gas_rho = data["PartType0/Density"][:] * 1e10 * (1e3) ** 3  # (Msun/h)/(Mpc/h)^3
