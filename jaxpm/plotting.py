@@ -245,3 +245,40 @@ def compare_particle_evolution(
 
     if title is not None:
         fig.suptitle(title, fontsize=16, y=1.05)
+
+
+def plot_gas_features(
+    scales, field_dict, features=["rho_gas", "fscalar_gas", "vel_disp_gas", "vel_div_gas", "P_gas", "U_gas", "T_gas"]
+):
+    nrows = len(scales)
+    ncols = len(features)
+
+    fig, ax = plt.subplots(nrows=nrows, ncols=ncols, figsize=(ncols * 4, nrows * 4))
+
+    for j in range(ncols):
+        fields = field_dict[features[j]]
+        fields = jnp.arcsinh(jnp.sum(fields, axis=1))
+        vmin, vmax = fields.min(), fields.max()
+
+        for i in range(nrows):
+            field = fields[i]
+
+            im = ax[i, j].imshow(field, vmin=vmin, vmax=vmax)
+
+            ax[i, j].set_xticks([])
+            ax[i, j].set_yticks([])
+
+            if i == 0:
+                ax[i, j].set(title=features[j])
+            if i == nrows - 1:
+                fig.colorbar(
+                    im,
+                    ax=ax[:, j],
+                    orientation="horizontal",
+                    shrink=0.7,
+                    aspect=10,
+                    pad=0.01,
+                    label=f"arcsinh({features[j]})",
+                )
+            if j == 0:
+                ax[i, j].set(ylabel=f"{scales[i]:.3f}")

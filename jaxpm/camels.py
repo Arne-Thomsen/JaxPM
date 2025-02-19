@@ -1,8 +1,10 @@
 import os, glob, h5py, tqdm, hdf5plugin
 import numpy as np
+import jax
 import jax.numpy as jnp
 
 from jaxpm.painting import cic_paint, cic_read
+from jaxpm.kernels import fftk, gradient_kernel, invnabla_kernel
 import jax_cosmo as jc
 
 
@@ -52,13 +54,13 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
     else:
         print(f"Using all particles")
 
-    out_dict = {
+    snapshot_dict = {
         "scales": [],
         "dm_poss": [],
         "dm_vels": [],
     }
     if return_hydro:
-        out_dict.update(
+        snapshot_dict.update(
             {
                 "gas_poss": [],
                 "gas_vels": [],
@@ -81,12 +83,12 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
                 # Omega_L = data["Header"].attrs["OmegaLambda"]
                 # Omega_b = data["Header"].attrs["OmegaBaryon"]
                 masses = data["Header"].attrs["MassTable"] * 1e10  # masses of the particles in Msun/h
-                out_dict["masses"] = masses
+                snapshot_dict["masses"] = masses
 
             redshift = data["Header"].attrs["Redshift"]
             scale_factor = data["Header"].attrs["Time"]
 
-            out_dict["scales"].append(scale_factor)
+            snapshot_dict["scales"].append(scale_factor)
 
             # dark matter #############################################################################################
             dm_pos = data["PartType1/Coordinates"][:] / 1e3  # Mpc/h
@@ -101,11 +103,11 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
                 dm_ids = np.argsort(data["PartType1/ParticleIDs"][:])
                 dm_pos = dm_pos[dm_ids]
                 dm_vel = dm_vel[dm_ids]
-                dm_pos = subsample_ordered_particles_in_boxes(dm_pos, in_particles=256, out_particles=parts_per_dim)
-                dm_vel = subsample_ordered_particles_in_boxes(dm_vel, in_particles=256, out_particles=parts_per_dim)
+                dm_pos = _subsample_ordered_particles_in_boxes(dm_pos, in_particles=256, out_particles=parts_per_dim)
+                dm_vel = _subsample_ordered_particles_in_boxes(dm_vel, in_particles=256, out_particles=parts_per_dim)
 
-            out_dict["dm_poss"].append(dm_pos)
-            out_dict["dm_vels"].append(dm_vel)
+            snapshot_dict["dm_poss"].append(dm_pos)
+            snapshot_dict["dm_vels"].append(dm_vel)
 
             # gas #####################################################################################################
             if return_hydro:
@@ -118,11 +120,11 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
                 gas_vel *= np.sqrt(scale_factor)
 
                 gas_mass = data["PartType0/Masses"][:] * 1e10  # Msun/h
-                gas_mass /= masses[1] # dm_mass per particle
+                gas_mass /= masses[1]  # dm_mass per particle
 
                 # density
                 rho_gas = cic_paint(jnp.zeros([mesh_per_dim] * 3), gas_pos, gas_mass)
-                gas_rho = cic_read(rho_gas, gas_pos) # dm_mass/(Mpc/h)^3
+                gas_rho = cic_read(rho_gas, gas_pos)  # dm_mass/(Mpc/h)^3
                 gas_rho *= (mesh_per_dim / box_size) ** 3  # dm_mass/pm_len
 
                 # pressure
@@ -139,9 +141,16 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
                 # P_gas = cic_paint(jnp.zeros([mesh_per_dim] * 3), gas_pos, (gamma - 1.0) * gas_U * gas_mass)
 
                 # the rho factor is implicitly included in the cic_paint
-                P_gas = cic_paint(jnp.zeros([mesh_per_dim] * 3), gas_pos, (gamma - 1.0) * gas_U * gas_mass)
-                gas_P = cic_read(P_gas, gas_pos) 
-                gas_P *= (mesh_per_dim / box_size) ** 3  #  dm_mass*pm_vel^2/dm_pos^3
+                # P_gas = cic_paint(jnp.zeros([mesh_per_dim] * 3), gas_pos, (gamma - 1.0) * gas_U * gas_mass)
+                # gas_P = cic_read(P_gas, gas_pos)
+                # gas_P *= (mesh_per_dim / box_size) ** 3  #  dm_mass*pm_vel^2/dm_pos^3
+
+                # print(gas_P)
+
+                # TODO
+                gas_P = (gamma - 1.0) * gas_U * gas_rho
+                gas_P *= (mesh_per_dim / box_size) ** 3
+                # print(gas_P)
 
                 # directly from CAMELS
                 # gas_rho = data["PartType0/Density"][:] * 1e10 * (1e3) ** 3  # (Msun/h)/(Mpc/h)^3
@@ -166,27 +175,28 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
                     gas_P = gas_P[gas_ids][gas_mask]
                     gas_T = gas_T[gas_ids][gas_mask]
 
-                out_dict["gas_poss"].append(gas_pos)
-                out_dict["gas_vels"].append(gas_vel)
-                out_dict["gas_masss"].append(gas_mass)
-                out_dict["gas_rhos"].append(gas_rho)
-                out_dict["gas_Us"].append(gas_U)
-                out_dict["gas_Ps"].append(gas_P)
-                out_dict["gas_Ts"].append(gas_T)
+                snapshot_dict["gas_poss"].append(gas_pos)
+                snapshot_dict["gas_vels"].append(gas_vel)
+                snapshot_dict["gas_masss"].append(gas_mass)
+                snapshot_dict["gas_rhos"].append(gas_rho)
+                snapshot_dict["gas_Us"].append(gas_U)
+                snapshot_dict["gas_Ps"].append(gas_P)
+                snapshot_dict["gas_Ts"].append(gas_T)
 
-    out_dict["cosmo"] = cosmo
+    snapshot_dict["cosmo"] = cosmo
+    snapshot_dict["mesh_per_dim"] = mesh_per_dim
 
     # convert lists to jnp.arrays for compatible shapes
-    for key, value in out_dict.items():
+    for key, value in snapshot_dict.items():
         try:
-            out_dict[key] = jnp.squeeze(jnp.stack(value, axis=0))
+            snapshot_dict[key] = jnp.squeeze(jnp.stack(value, axis=0))
         except (ValueError, TypeError):
             pass
 
-    return out_dict
+    return snapshot_dict
 
 
-def subsample_ordered_particles_in_boxes(particles, in_particles=256, out_particles=64):
+def _subsample_ordered_particles_in_boxes(particles, in_particles=256, out_particles=64):
     """
     It's important that the particles are ordered by index. Adapted from:
     https://github.com/DifferentiableUniverseInitiative/jaxpm-paper/blob/main/notebooks/dev/CAMELS_Fitting_PosVel.ipynb
@@ -209,3 +219,75 @@ def subsample_ordered_particles_in_boxes(particles, in_particles=256, out_partic
     ].reshape([-1, dims])
 
     return particles
+
+
+def preprocess_snapshots(snapshot_dict):
+    mesh_shape = [snapshot_dict["mesh_per_dim"]] * 3
+
+    # vmap over the snapshots
+    vcic_paint_scalar = jax.vmap(cic_paint, in_axes=(None, 0, None))
+    vcic_paint = jax.vmap(cic_paint, in_axes=(None, 0, 0))
+    vcic_read = jax.vmap(cic_read, in_axes=(0, 0))
+
+    # vmap over features (like velocity components)
+    vvcic_paint = jax.vmap(vcic_paint, in_axes=(None, None, -1), out_axes=-1)
+    vvcic_read = jax.vmap(vcic_read, in_axes=(-1, None), out_axes=-1)
+
+    cosmo = snapshot_dict["cosmo"]
+    scales = snapshot_dict["scales"]
+
+    gas_pos = snapshot_dict["gas_poss"]
+    gas_vel = snapshot_dict["gas_vels"]
+
+    # rho
+    rho_gas = vcic_paint_scalar(jnp.zeros(mesh_shape), gas_pos, cosmo.Omega_b / cosmo.Omega_c)
+    gas_rho = vcic_read(rho_gas, gas_pos)
+
+    # fscalar
+    kvec = fftk(mesh_shape)
+    delta_k = jnp.fft.rfftn(rho_gas, axes=(1, 2, 3))
+    fscalar_gas = jnp.fft.irfftn(delta_k * invnabla_kernel(kvec), axes=(1, 2, 3))
+    gas_fscalar = vcic_read(fscalar_gas, gas_pos)
+
+    # velocity dispersion
+    N_gas = vcic_paint_scalar(jnp.zeros(mesh_shape), gas_pos, 1)
+    gas_N = vcic_read(N_gas, gas_pos)
+
+    vel_mean_gas = vvcic_paint(jnp.zeros(mesh_shape), gas_pos, gas_vel / gas_N[..., jnp.newaxis])
+    gas_vel_mean = vvcic_read(vel_mean_gas, gas_pos)
+    gas_vel_disp = jnp.sum((gas_vel_mean - gas_vel) ** 2, axis=-1)
+    vel_disp_gas = vcic_paint(jnp.zeros(mesh_shape), gas_pos, gas_vel_disp / gas_N)
+
+    # velocity divergence
+    vel_gas_k = jnp.fft.rfftn(vel_mean_gas, axes=(1, 2, 3))
+    gas_vel_div = [
+        vcic_read(jnp.fft.irfftn(gradient_kernel(kvec, i) * vel_gas_k[..., i], axes=(1, 2, 3)), gas_pos)
+        for i in range(len(kvec))
+    ]
+    gas_vel_div = jnp.stack(gas_vel_div, axis=-1)
+    gas_vel_div = jnp.sum(gas_vel_div, axis=-1)
+    vel_div_gas = vcic_paint(jnp.zeros(mesh_shape), gas_pos, gas_vel_div / gas_N)
+
+    # output
+    particle_features = {}
+    particle_features["gas_pos"] = gas_pos
+    particle_features["gas_rho"] = gas_rho
+    particle_features["gas_fscalar"] = gas_fscalar
+    particle_features["gas_vel_disp"] = gas_vel_disp
+    particle_features["gas_vel_div"] = gas_vel_div
+
+    particle_features["gas_P"] = snapshot_dict["gas_Ps"]
+    particle_features["gas_U"] = snapshot_dict["gas_Us"]
+    particle_features["gas_T"] = snapshot_dict["gas_Ts"]
+
+    field_features = {}
+    field_features["rho_gas"] = rho_gas
+    field_features["fscalar_gas"] = fscalar_gas
+    field_features["vel_disp_gas"] = vel_disp_gas
+    field_features["vel_div_gas"] = vel_div_gas
+
+    field_features["P_gas"] = vcic_paint(jnp.zeros(mesh_shape), gas_pos, snapshot_dict["gas_Ps"] / gas_N)
+    field_features["U_gas"] = vcic_paint(jnp.zeros(mesh_shape), gas_pos, snapshot_dict["gas_Us"] / gas_N)
+    field_features["T_gas"] = vcic_paint(jnp.zeros(mesh_shape), gas_pos, snapshot_dict["gas_Ts"] / gas_N)
+
+    return scales, particle_features, field_features

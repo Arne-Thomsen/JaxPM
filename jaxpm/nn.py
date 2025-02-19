@@ -128,18 +128,32 @@ class NeuralSplineFourierFilterNNX(nnx.Module):
 
 
 class MLP(nnx.Module):
-    def __init__(self, d_in: int, d_out: int, d_hidden: int, n_hidden: int, rngs: nnx.Rngs, activation=jax.nn.relu):
+    def __init__(
+        self,
+        d_in: int,
+        d_out: int,
+        d_hidden: int,
+        n_hidden: int,
+        rngs: nnx.Rngs,
+        dropout_rate: float = 0.0,
+        activation=jax.nn.relu,
+    ):
         self.linear_in = nnx.Linear(d_in, d_hidden, rngs=rngs)
         self.linear_hid = [nnx.Linear(d_hidden, d_hidden, rngs=rngs) for _ in range(n_hidden)]
         self.linear_out = nnx.Linear(d_hidden, d_out, rngs=rngs)
         self.activation = activation
-
+        self.dropout_rate = dropout_rate
+        self.dropout = [nnx.Dropout(dropout_rate, rngs=rngs) for _ in range(n_hidden)]
         self.d_out = d_out
 
-    def __call__(self, x):
+    def __call__(self, x, training: bool = False):
         x = self.activation(self.linear_in(x))
-        for layer in self.linear_hid:
-            x = self.activation(layer(x))
+
+        for i, linear in enumerate(self.linear_hid):
+            x = self.activation(linear(x))
+            if training and self.dropout_rate > 0:
+                x = self.dropout[i](x, deterministic=not training)
+
         x = self.linear_out(x)
         return x
 
@@ -150,7 +164,7 @@ class CNN(nnx.Module):
         d_in: int,
         d_hidden: int,
         d_out: int,
-        num_layers: int,
+        n_hidden: int,
         kernel_size: tuple = (3, 3, 3),
         strides: int = 1,
         rngs: nnx.Rngs = nnx.Rngs(0),
@@ -160,7 +174,7 @@ class CNN(nnx.Module):
 
         self.conv_in = nnx.Conv(d_in, d_hidden, kernel_size, strides, padding="SAME", rngs=rngs)
         self.conv_hidden = [
-            nnx.Conv(d_hidden, d_hidden, kernel_size, strides, padding="SAME", rngs=rngs) for _ in range(num_layers)
+            nnx.Conv(d_hidden, d_hidden, kernel_size, strides, padding="SAME", rngs=rngs) for _ in range(n_hidden)
         ]
         self.conv_out = nnx.Conv(d_hidden, d_out, kernel_size, strides, padding="SAME", rngs=rngs)
         self.activation = activation
@@ -382,7 +396,7 @@ class AttentionGNN(nnx.Module):
 
     # def get_update_fn(self, layer)
 
-    def __call__(self, graph):
+    def __call__(self, graph, training=False):
         graph = self.gat(graph, self.query_in, self.logit_in)
         for query, logit in zip(self.query_hid, self.logit_hid):
             graph = self.gat(graph, query, logit)
@@ -391,4 +405,4 @@ class AttentionGNN(nnx.Module):
         if self.final_projection:
             graph = graph._replace(nodes=self.linear_out(graph.nodes))
 
-        return graph
+        return graph.nodes

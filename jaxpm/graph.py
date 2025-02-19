@@ -7,6 +7,8 @@ import jraph
 
 from functools import partial
 
+from jaxpm import data
+
 
 def scipy_get_knn(points, k, distance_upper_bound=np.inf, boxsize=None, workers=-1, leafsize=10):
     kd_tree = scipy.spatial.cKDTree(data=points, boxsize=boxsize, leafsize=leafsize)
@@ -68,47 +70,65 @@ def get_edges(poss, scales, k=4, boxsize=None):
     return edges
 
 
-def get_graph_given_edges(scale, edges, rho, fscalar):
-
-    edge_scales = edges["scales"]
-    if isinstance(edge_scales, jnp.ndarray) and edge_scales.ndim > 0:
-        scale_diffs = jnp.abs(scale - edge_scales)
-        idx = jnp.argmin(scale_diffs)
-        edge_features = edges["features"][idx]
-        senders = edges["senders"][idx]
-        receivers = edges["receivers"][idx]
-    else:
-        edge_features = edges["features"]
-        senders = edges["senders"]
-        receivers = edges["receivers"]
-
-    n_node = rho.shape[0]
-    n_edge = edge_features.shape[0]
-
+def get_graph_given_edges(node_features, edges, interpolate_graph=False):
     # TODO add latent feature
-    node_features = jnp.stack([jnp.tile(scale, n_node), jnp.log10(rho), jnp.arcsinh(fscalar / 100)], axis=-1)
 
-    graph = jraph.GraphsTuple(
-        nodes=node_features,
-        edges=edge_features,
-        senders=senders,
-        receivers=receivers,
-        n_node=n_node,
-        n_edge=n_edge,
-        globals=None,
+    if node_features.ndim == 2:
+        graph = jraph.GraphsTuple(
+            nodes=node_features,
+            edges=edges["features"],
+            senders=edges["senders"],
+            receivers=edges["receivers"],
+            n_node=node_features.shape[0],
+            n_edge=edges["features"].shape[0],
+            globals=None,
+        )
+    if node_features.ndim == 3:
+        n_scales = node_features.shape[0]
+
+        if interpolate_graph:
+            raise NotImplementedError
+            # n_node = node_features.shape[1]
+            # scale_diffs = jnp.abs(scale - edge_scales)
+            # idx = jnp.argmin(scale_diffs)
+            # edge_features = edges["features"][idx]
+            # senders = edges["senders"][idx]
+            # receivers = edges["receivers"][idx]
+
+        else:
+            graph = []
+            for i in range(n_scales):
+                graph.append(
+                    jraph.GraphsTuple(
+                        nodes=node_features[i],
+                        edges=edges["features"][i],
+                        senders=edges["senders"][i],
+                        receivers=edges["receivers"][i],
+                        n_node=node_features.shape[1],
+                        n_edge=edges["features"].shape[1],
+                        globals=None,
+                    )
+                )
+
+    return graph
+
+
+def get_graph(
+    snapshot_dict,
+    x_labels=["rho", "fscalar", "vel_disp", "vel_div"],
+    y_labels=["P", "U", "T"],
+    k=4,
+    boxsize=None,
+    stop_gradient=True,
+):
+    node_features, _, Y_particle, _ = data.get_offline_regression_data(
+        snapshot_dict, x_labels=x_labels, y_labels=y_labels
     )
 
-    return graph
-
-
-def get_graph(scale, pos, rho, fscalar, k=4, boxsize=None, stop_gradient=True):
     if stop_gradient:
-        scale = jax.lax.stop_gradient(scale)
-        pos = jax.lax.stop_gradient(pos)
-        rho = jax.lax.stop_gradient(rho)
-        fscalar = jax.lax.stop_gradient(fscalar)
+        node_features = jax.lax.stop_gradient(node_features)
 
-    edges = get_edges(pos, scale, k, boxsize=boxsize)
-    graph = get_graph_given_edges(scale, edges, rho, fscalar)
+    edges = get_edges(snapshot_dict["gas_poss"], snapshot_dict["scales"], k, boxsize=boxsize)
+    graph = get_graph_given_edges(node_features, edges)
 
-    return graph
+    return graph, Y_particle
