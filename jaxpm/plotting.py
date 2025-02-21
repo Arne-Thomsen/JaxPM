@@ -87,6 +87,104 @@ def plot_particle_evolution(
         return vmin, vmax
 
 
+def compare_field_evolution(
+    scales,
+    fields,
+    include_pk=False,
+    # values
+    log=True,
+    vmin=None,
+    vmax=None,
+    shared_colorbar=True,
+    individual_colorbars=False,
+    # cosmetics
+    title=None,
+    col_titles=None,
+    cmap="magma",
+):
+    n_scales = len(scales)
+    n_runs = len(fields)
+
+    fields_2d = fields.sum(axis=2)
+    if log:
+        fields_2d = jnp.log10(fields_2d)
+
+    if shared_colorbar:
+        vmin = vmin if vmin is not None else fields_2d.min()
+        vmax = vmax if vmax is not None else fields_2d.max()
+
+    nrows = n_scales
+    ncols = n_runs
+    if include_pk:
+        ncols += 1
+
+    fig, ax = plt.subplots(
+        nrows=nrows, ncols=ncols, figsize=(2 * ncols, 2 * nrows), constrained_layout=True, sharey="col", sharex="col"
+    )
+
+    for i in tqdm(range(n_scales)):
+        for j in range(n_runs):
+            label = col_titles[j] if col_titles is not None else None
+
+            if individual_colorbars:
+                vmin = vmin if vmin is not None else fields_2d[0].min()
+                vmax = vmax if vmax is not None else fields_2d[0].max()
+
+            im = ax[i, j].imshow(
+                fields_2d[j, i],
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+            )
+
+            ax[i, j].set_xticks([])
+            ax[i, j].set_yticks([])
+
+            if individual_colorbars:
+                fig.colorbar(im, ax=ax[i, j], orientation="horizontal", shrink=0.6, aspect=20)
+
+            @jax.jit
+            def jit_power_spectrum(field):
+                return power_spectrum(
+                    compensate_cic(field),
+                    boxsize=np.array([25.0] * 3),
+                    kmin=np.pi / 25.0,
+                    dk=2 * np.pi / 25.0,
+                )
+
+            @jax.jit
+            def jit_cross_correlation(field_a, field_b):
+                return cross_correlation_coefficients(
+                    compensate_cic(field_a),
+                    compensate_cic(field_b),
+                    boxsize=np.array([25.0] * 3),
+                    kmin=np.pi / 25.0,
+                    dk=2 * np.pi / 25.0,
+                )
+
+            if include_pk:
+                axis = n_runs
+                k, pk = jit_power_spectrum(fields[j, i])
+                ax[i, axis].loglog(k, pk, label=label)
+                ax[i, axis].set(ylabel=r"$P(k)$")
+                ax[0, axis].legend()
+                ax[0, axis].set(title="power spectrum")
+                ax[n_scales - 1, axis].set(xlabel=r"$k$ [$h \ \mathrm{Mpc}^{-1}$]")
+
+    for i, scale in enumerate(scales):
+        ax[i, 0].set_ylabel(f"{scale:.4f}", fontsize=12)
+
+    if col_titles is not None:
+        for j, col_title in enumerate(col_titles):
+            ax[0, j].set_title(col_title, fontsize=12)
+
+    if shared_colorbar:
+        fig.colorbar(im, ax=ax[:, :n_runs], orientation="horizontal", shrink=0.8, aspect=20, label="log(sum(field))")
+
+    if title is not None:
+        fig.suptitle(title, fontsize=16, y=1.05)
+
+
 def compare_particle_evolution(
     mesh_shape,
     scales,

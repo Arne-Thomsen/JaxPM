@@ -70,65 +70,80 @@ def get_edges(poss, scales, k=4, boxsize=None):
     return edges
 
 
-def get_graph_given_edges(node_features, edges, interpolate_graph=False):
-    # TODO add latent feature
+def get_graph_given_edges(node_features, edges, current_scale=None):
+    interpolate_graph = True if current_scale is not None else False
 
+    # single graph
     if node_features.ndim == 2:
+        # node_features is single snapshot, but edges includes multiple. Choose the closest one to current_scale
+        if interpolate_graph:
+            scale_diffs = jnp.abs(current_scale - edges["scales"])
+            idx = jnp.argmin(scale_diffs)
+            edge_features = edges["features"][idx]
+            senders = edges["senders"][idx]
+            receivers = edges["receivers"][idx]
+        else:
+            edge_features = edges["features"]
+            senders = edges["senders"]
+            receivers = edges["receivers"]
+
         graph = jraph.GraphsTuple(
             nodes=node_features,
-            edges=edges["features"],
-            senders=edges["senders"],
-            receivers=edges["receivers"],
+            edges=edge_features,
+            senders=senders,
+            receivers=receivers,
             n_node=node_features.shape[0],
-            n_edge=edges["features"].shape[0],
+            n_edge=edge_features.shape[0],
             globals=None,
         )
-    if node_features.ndim == 3:
+
+    # multiple graphs (one per scale)
+    elif node_features.ndim == 3:
         n_scales = node_features.shape[0]
 
-        if interpolate_graph:
-            raise NotImplementedError
-            # n_node = node_features.shape[1]
-            # scale_diffs = jnp.abs(scale - edge_scales)
-            # idx = jnp.argmin(scale_diffs)
-            # edge_features = edges["features"][idx]
-            # senders = edges["senders"][idx]
-            # receivers = edges["receivers"][idx]
-
-        else:
-            graph = []
-            for i in range(n_scales):
-                graph.append(
-                    jraph.GraphsTuple(
-                        nodes=node_features[i],
-                        edges=edges["features"][i],
-                        senders=edges["senders"][i],
-                        receivers=edges["receivers"][i],
-                        n_node=node_features.shape[1],
-                        n_edge=edges["features"].shape[1],
-                        globals=None,
-                    )
+        graph = []
+        for i in range(n_scales):
+            graph.append(
+                jraph.GraphsTuple(
+                    nodes=node_features[i],
+                    edges=edges["features"][i],
+                    senders=edges["senders"][i],
+                    receivers=edges["receivers"][i],
+                    n_node=node_features.shape[1],
+                    n_edge=edges["features"].shape[1],
+                    globals=None,
                 )
+            )
 
     return graph
 
 
-def get_graph(
+def get_graphs_from_snapshots(
     snapshot_dict,
     x_labels=["rho", "fscalar", "vel_disp", "vel_div"],
     y_labels=["P", "U", "T"],
     k=4,
     boxsize=None,
-    stop_gradient=True,
 ):
+    """For offline regression"""
+
     node_features, _, Y_particle, _ = data.get_offline_regression_data(
         snapshot_dict, x_labels=x_labels, y_labels=y_labels
     )
 
-    if stop_gradient:
-        node_features = jax.lax.stop_gradient(node_features)
-
-    edges = get_edges(snapshot_dict["gas_poss"], snapshot_dict["scales"], k, boxsize=boxsize)
+    edges = get_edges(snapshot_dict["gas_poss"], snapshot_dict["scales"], k=k, boxsize=boxsize)
     graph = get_graph_given_edges(node_features, edges)
 
     return graph, Y_particle
+
+
+def get_graph_from_features(node_features, scale, k=4, boxsize=None, stop_gradient=True):
+    """For online/in-sim learning"""
+
+    if stop_gradient:
+        node_features = jax.lax.stop_gradient(node_features)
+
+    edges = get_edges(node_features, scale, k=k, boxsize=boxsize)
+    graph = get_graph_given_edges(node_features, edges)
+
+    return graph
