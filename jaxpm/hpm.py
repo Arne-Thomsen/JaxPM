@@ -24,21 +24,25 @@ def hpm_forces(
     edges=None,
     graph_kwargs={},
 ):
-    kvec = fftk(mesh_shape)
+    d_gas_latent = None
 
     N_dm = cic_paint(jnp.zeros(mesh_shape), dm_pos)
     N_gas = cic_paint(jnp.zeros(mesh_shape), gas_pos)
     gas_N = cic_read(N_gas, gas_pos)
 
-    # assume identical mass for all particles
+    # assume identical mass for all particles of a given species
     rho_dm = N_dm * cosmo.Omega_c / (cosmo.Omega_c + cosmo.Omega_b)
     rho_gas = N_gas * cosmo.Omega_b / (cosmo.Omega_c + cosmo.Omega_b)
-
     rho_tot = rho_dm + rho_gas
 
+    # this doesn't change the force, but resembles the analytic derivation
+    delta_tot = rho_tot / jnp.mean(rho_tot) - 1
+
     # gravitational potential
-    rho_k_tot = jnp.fft.rfftn(rho_tot)
+    kvec = fftk(mesh_shape)
+    rho_k_tot = jnp.fft.rfftn(delta_tot)
     phi_k_tot = rho_k_tot * invlaplace_kernel(kvec) * longrange_kernel(kvec, r_split=r_split)
+    phi_k_tot *= 1.5 * cosmo.Omega_m * scale
 
     def gravity(pos):
         return jnp.stack(
@@ -63,6 +67,7 @@ def hpm_forces(
                 gas_N,
                 mesh_shape,
                 gas_latent=gas_latent,
+                return_vel=False,
                 return_field=False,
             )
             gas_preds = model(gas_inputs)
@@ -109,7 +114,7 @@ def hpm_forces(
             gas_P = 10 ** jnp.squeeze(gas_preds)
         else:
             print("With latent variable")
-            gas_P, gas_latent = 10 ** gas_preds[:, 0], gas_preds[:, 1:]
+            gas_P, d_gas_latent = 10 ** gas_preds[:, 0], gas_preds[:, 1:]
 
         P_gas = cic_paint(jnp.zeros(mesh_shape), gas_pos, weight=gas_P / gas_N)
         P_gas_k = jnp.fft.rfftn(P_gas)
@@ -123,7 +128,10 @@ def hpm_forces(
 
         gas_force -= pressure(gas_pos)
 
-    return dm_force, gas_force, gas_latent
+        # TODO why does make it easier to learn?
+        # gas_force -= 1.5 * cosmo.Omega_m * scale * pressure(gas_pos)
+
+    return dm_force, gas_force, d_gas_latent
 
 
 def hpm_forces_old(
@@ -372,16 +380,17 @@ def get_hpm_network_ode_fn(
     gravity_only=False,
 ):
     def hpm_ode(scale, state, kwargs):
+        with_latent = True if len(state) == 5 else False
+        if with_latent:
+            dm_pos, dm_vel, gas_pos, gas_vel, gas_latent = state
+        else:
+            dm_pos, dm_vel, gas_pos, gas_vel = state
+            gas_latent = None
+
         if kwargs is None:
             kwargs = {}
 
-        if len(state) == 4:
-            dm_pos, dm_vel, gas_pos, gas_vel = state
-            gas_latent = None
-        elif len(state) == 5:
-            dm_pos, dm_vel, gas_pos, gas_vel, gas_latent = state
-
-        dm_force, gas_force, gas_latent = hpm_forces(
+        dm_force, gas_force, d_gas_latent = hpm_forces(
             scale,
             dm_pos,
             gas_pos,
@@ -396,28 +405,24 @@ def get_hpm_network_ode_fn(
             **kwargs,
         )
 
-        dm_force *= 1.5 * cosmo.Omega_m
-        gas_force *= 1.5 * cosmo.Omega_m
+        ode_fac = 1.0 / (scale**3 * jnp.sqrt(jc.background.Esqr(cosmo, scale)))
 
         # update the positions (drift)
-        pos_fac = 1.0 / (scale**3 * jnp.sqrt(jc.background.Esqr(cosmo, scale)))
-        d_dm_pos = pos_fac * dm_vel
-        d_gas_pos = pos_fac * gas_vel
+        d_dm_pos = ode_fac * dm_vel
+        d_gas_pos = ode_fac * gas_vel
 
         # update the velocities (kick)
-        vel_fac = 1.0 / (scale**2 * jnp.sqrt(jc.background.Esqr(cosmo, scale)))
-        d_dm_vel = vel_fac * dm_force
-        d_gas_vel = vel_fac * gas_force
+        d_dm_vel = ode_fac * dm_force
+        d_gas_vel = ode_fac * gas_force
 
         # the two particle species have different masses
-        d_dm_vel /= cosmo.Omega_c / (cosmo.Omega_c + cosmo.Omega_b)
-        d_gas_vel /= cosmo.Omega_b / (cosmo.Omega_c + cosmo.Omega_b)
+        # d_dm_vel /= cosmo.Omega_c / (cosmo.Omega_c + cosmo.Omega_b)
+        # d_gas_vel /= cosmo.Omega_b / (cosmo.Omega_c + cosmo.Omega_b)
 
-        if len(state) == 4:
+        if with_latent:
+            return d_dm_pos, d_dm_vel, d_gas_pos, d_gas_vel, d_gas_latent
+        else:
             return d_dm_pos, d_dm_vel, d_gas_pos, d_gas_vel
-        elif len(state) == 5:
-            # TODO learn the derivative of gas_latent
-            return d_dm_pos, d_dm_vel, d_gas_pos, d_gas_vel, jnp.zeros_like(gas_latent)
 
     if integrator_type == "odeint":
         ode_fn = lambda state, scale, args: hpm_ode(scale, state, args)
