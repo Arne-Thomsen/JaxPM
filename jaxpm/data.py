@@ -3,16 +3,16 @@ import jax.numpy as jnp
 
 from jaxpm.painting import cic_paint, cic_read
 from jaxpm.camels import preprocess_snapshots
-from jaxpm.kernels import fftk, invnabla_kernel, gradient_kernel
+from jaxpm.kernels import fftk, invnabla_kernel, invlaplace_kernel, gradient_kernel
 
 
 def get_offline_regression_data(
     snapshot_dict,
     x_labels=["rho", "fscalar", "vel_disp", "vel_div"],
     y_labels=["P", "U", "T"],
-    standardize_input=True,
     include_scale=True,
     include_latent=False,
+    standardize_input=False,
     eps=1e-8,
 ):
     scales, particle_features, field_features = preprocess_snapshots(snapshot_dict)
@@ -47,8 +47,8 @@ def get_offline_regression_data(
     Y_particle = []
     Y_field = []
     for y_label in y_labels:
-        Y_particle.append(jnp.log10(particle_features[f"gas_{y_label}"] + 1))
-        Y_field.append(jnp.log10(field_features[f"{y_label}_gas"] + 1))
+        Y_particle.append(jnp.log10(particle_features[f"gas_{y_label}"] + eps))
+        Y_field.append(jnp.log10(field_features[f"{y_label}_gas"] + eps))
     Y_particle = jnp.stack(Y_particle, axis=-1)
     Y_field = jnp.stack(Y_field, axis=-1)
 
@@ -64,7 +64,7 @@ def get_hpm_inputs(
     gas_N,
     mesh_shape,
     gas_latent=None,
-    with_vel=True,
+    return_vel=True,
     return_field=False,
     eps=1e-8,
 ):
@@ -79,9 +79,13 @@ def get_hpm_inputs(
         jnp.log10(gas_rho + eps),
         jnp.arcsinh(gas_fscalar),
     ]
-    field_inputs = []
+    if return_field:
+        field_inputs = [
+            jnp.log10(rho_gas + eps),
+            jnp.arcsinh(fscalar_gas),
+        ]
 
-    if with_vel:
+    if return_vel:
         # velocity dispersion
         vcic_paint = jax.vmap(cic_paint, in_axes=(None, None, -1), out_axes=-1)
         vcic_read = jax.vmap(cic_read, in_axes=(-1, None), out_axes=-1)
@@ -106,20 +110,37 @@ def get_hpm_inputs(
         if return_field:
             vel_disp_gas = cic_paint(jnp.zeros(mesh_shape), gas_pos, gas_vel_disp / gas_N)
             vel_div_gas = cic_paint(jnp.zeros(mesh_shape), gas_pos, gas_vel_div / gas_N)
-            field_inputs += [jnp.log10(vel_disp_gas + eps), jnp.arcsinh(vel_div_gas)]
+            field_inputs += [
+                jnp.log10(vel_disp_gas + eps),
+                jnp.arcsinh(vel_div_gas),
+            ]
 
+    # these are all scalar features and can be stacked
     gas_inputs = jnp.stack(gas_inputs, axis=-1)
-
-    if gas_latent is not None:
-        if gas_latent.ndim == 1:
-            gas_latent = jnp.expand_dims(gas_latent, axis=-1)
-        gas_inputs = jnp.concatenate([gas_inputs, gas_latent], axis=-1)
-
     if return_field:
-        field_inputs += [jnp.log10(rho_gas + eps), jnp.arcsinh(fscalar_gas)]
         field_inputs = jnp.stack(field_inputs, axis=-1)
 
-        return gas_inputs, field_inputs
+    # latent might be higher dimensional
+    if gas_latent is not None:
+        assert gas_latent.ndim == 2
 
+        # latent_gas = vcic_paint(jnp.zeros(mesh_shape), gas_pos, gas_latent / gas_N[..., jnp.newaxis])
+        # latent_gas_k = jnp.fft.rfftn(latent_gas, axes=(0, 1, 2))
+        # latent_kernel_gas_k = latent_gas_k * invnabla_kernel(kvec)[..., jnp.newaxis]
+        # # latent_kernel_gas_k = latent_gas_k * invlaplace_kernel(kvec)[..., jnp.newaxis]
+        # latent_kernel_gas = jnp.fft.irfftn(latent_kernel_gas_k, axes=(0, 1, 2))
+        # gas_latent_kernel = vcic_read(latent_kernel_gas, gas_pos)
+
+        # gas_inputs = jnp.concatenate([gas_inputs, gas_latent, gas_latent_kernel], axis=-1)
+
+        gas_inputs = jnp.concatenate([gas_inputs, gas_latent], axis=-1)
+
+        # TODO
+        if return_field:
+            latent_gas = vcic_paint(jnp.zeros(mesh_shape), gas_pos, gas_latent / gas_N[..., jnp.newaxis])
+            field_inputs = jnp.concatenate([field_inputs, latent_gas], axis=-1)
+
+    if return_field:
+        return gas_inputs, field_inputs
     else:
         return gas_inputs
