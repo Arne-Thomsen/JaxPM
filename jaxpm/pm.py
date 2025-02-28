@@ -15,26 +15,31 @@ from jaxpm.kernels import PGD_kernel, fftk, gradient_kernel, invlaplace_kernel, 
 from jaxpm.painting import cic_paint, cic_read
 
 
-def pm_forces(positions, mesh_shape, delta=None, r_split=0):
+def pm_forces(dm_pos, gas_pos, mesh_shape, delta=None, r_split=0):
     """
     Computes gravitational forces on particles using a PM scheme
     """
-    if delta is None:
-        delta_k = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), positions))
-    elif jnp.isrealobj(delta):
-        delta_k = jnp.fft.rfftn(delta)
-    else:
-        delta_k = delta
+    Omega_c = 0.251
+    Omega_b = 0.049
+
+    delta_k_dm = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), dm_pos, Omega_c / (Omega_c + Omega_b)))
+    delta_k_gas = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), gas_pos, Omega_b / (Omega_c + Omega_b)))
+    delta_k_tot = delta_k_dm + delta_k_gas
 
     # Computes gravitational potential
     kvec = fftk(mesh_shape)
-    pot_k = delta_k * invlaplace_kernel(kvec) * longrange_kernel(kvec, r_split=r_split)
+    pot_k = delta_k_tot * invlaplace_kernel(kvec) * longrange_kernel(kvec, r_split=r_split)
 
     # Computes gravitational forces
-    return jnp.stack(
-        [cic_read(jnp.fft.irfftn(-gradient_kernel(kvec, i) * pot_k), positions) for i in range(len(kvec))],
+    force_dm = jnp.stack(
+        [cic_read(jnp.fft.irfftn(-gradient_kernel(kvec, i) * pot_k), dm_pos) for i in range(len(kvec))],
         axis=-1,
     )
+    force_gas = jnp.stack(
+        [cic_read(jnp.fft.irfftn(-gradient_kernel(kvec, i) * pot_k), gas_pos) for i in range(len(kvec))],
+        axis=-1,
+    )
+    return force_dm, force_gas
 
 
 def lpt(cosmo: Cosmology, init_mesh, positions, a, order=1):
@@ -130,16 +135,20 @@ def make_ode_fn_diffrax(cosmo: Cosmology, mesh_shape):
 
         Compatible with [Diffrax API](https://docs.kidger.site/diffrax/)
         """
-        pos, vel = state
-        forces = pm_forces(pos, mesh_shape) * 1.5 * cosmo.Omega_m
+        dm_pos, dm_vel, gas_pos, gas_vel = state
+        dm_forces, gas_forces = pm_forces(dm_pos, gas_pos, mesh_shape)
+        dm_forces *= 1.5 * cosmo.Omega_m
+        gas_forces *= 1.5 * cosmo.Omega_m
 
         # Computes the update of position (drift)
-        dpos = 1.0 / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
+        d_dm_pos = 1.0 / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * dm_vel
+        d_gas_pos = 1.0 / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * gas_vel
 
         # Computes the update of velocity (kick)
-        dvel = 1.0 / (a**2 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * forces
+        d_dm_vel = 1.0 / (a**2 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * dm_forces
+        d_gas_vel = 1.0 / (a**2 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * gas_forces
 
-        return jnp.stack([dpos, dvel])
+        return jnp.stack([d_dm_pos, d_dm_vel, d_gas_pos, d_gas_vel])
 
     return nbody_ode
 
