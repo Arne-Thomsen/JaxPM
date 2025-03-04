@@ -27,7 +27,6 @@ def load_CV_snapshots(
     # list all snapshots
     SNAPSHOTS = glob.glob(os.path.join(CV_SIM, "snapshot_???.hdf5"))
     SNAPSHOTS.sort()
-    # print(f"Found snapshots {SNAPSHOTS}")
 
     if i_snapshots is not None:
         SNAPSHOTS = [SNAPSHOTS[i] for i in i_snapshots]
@@ -120,9 +119,10 @@ def load_CV_snapshots(
                 dm_mass = dm_mass_msun
 
             if subsample_particles:
-                dm_ids = np.argsort(data["PartType1/ParticleIDs"][:])
-                dm_pos = dm_pos[dm_ids]
-                dm_vel = dm_vel[dm_ids]
+                dm_ids = data["PartType1/ParticleIDs"][:]
+                i_sort = np.argsort(dm_ids)
+                dm_pos = dm_pos[i_sort]
+                dm_vel = dm_vel[i_sort]
                 dm_pos = _subsample_ordered_particles_in_boxes(dm_pos, in_particles=256, out_particles=parts_per_dim)
                 dm_vel = _subsample_ordered_particles_in_boxes(dm_vel, in_particles=256, out_particles=parts_per_dim)
 
@@ -160,9 +160,10 @@ def load_CV_snapshots(
                 gamma = 5.0 / 3.0
                 gas_P = (gamma - 1.0) * gas_U * gas_rho  #  dm_mass*pm_vel^2/dm_pos^3
 
-                # directly from CAMELS
-                # gas_rho = data["PartType0/Density"][:] * 1e10 * (1e3) ** 3  # (Msun/h)/(Mpc/h)^3
-                # gas_P = (gamma - 1.0) * gas_U * gas_rho  #  (Msun/h)*(km/s)^2/(Mpc/h)^3
+                if not pm_units:
+                    gas_rho = data["PartType0/Density"][:] * 1e10 * (1e3) ** 3  # (Msun/h)/(Mpc/h)^3
+                    gas_U = data["PartType0/InternalEnergy"][:]  # (km/s)^2
+                    gas_P = (gamma - 1.0) * gas_U * gas_rho  #  (Msun/h)*(km/s)^2/(Mpc/h)^3
 
                 # temperature
                 gas_ne = data["PartType0/ElectronAbundance"][:]
@@ -172,16 +173,20 @@ def load_CV_snapshots(
                 gas_T = gas_U * (1.0 + 4.0 * yhelium) / (1.0 + yhelium + gas_ne) * 1e10 * (2.0 / 3.0) * m_p / k_B
 
                 if subsample_particles:
-                    gas_ids = np.argsort(data["PartType0/ParticleIDs"][:])
-                    gas_mask = np.isin(data["PartType0/ParticleIDs"][:][gas_ids], gas_sub_ids)
+                    gas_ids = data["PartType0/ParticleIDs"][:]
+                    i_sort = np.argsort(gas_ids)
+                    if len(gas_ids) != len(jnp.unique(gas_ids)):
+                        print(f"WARNING! {SNAPSHOT} has duplicate gas particle IDs")
 
-                    gas_pos = gas_pos[gas_ids][gas_mask]
-                    gas_vel = gas_vel[gas_ids][gas_mask]
-                    gas_mass = gas_mass[gas_ids][gas_mask]
-                    gas_rho = gas_rho[gas_ids][gas_mask]
-                    gas_U = gas_U[gas_ids][gas_mask]
-                    gas_P = gas_P[gas_ids][gas_mask]
-                    gas_T = gas_T[gas_ids][gas_mask]
+                    gas_mask = np.isin(gas_ids[i_sort], gas_sub_ids)
+
+                    gas_pos = gas_pos[i_sort][gas_mask]
+                    gas_vel = gas_vel[i_sort][gas_mask]
+                    gas_mass = gas_mass[i_sort][gas_mask]
+                    gas_rho = gas_rho[i_sort][gas_mask]
+                    gas_U = gas_U[i_sort][gas_mask]
+                    gas_P = gas_P[i_sort][gas_mask]
+                    gas_T = gas_T[i_sort][gas_mask]
 
                     # NOTE pure randomness for debugging
                     # gas_ids = rng.choice(np.arange(len(gas_pos)), parts_per_dim**3, replace=False)
