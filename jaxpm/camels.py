@@ -8,7 +8,9 @@ from jaxpm.kernels import fftk, gradient_kernel, invnabla_kernel
 import jax_cosmo as jc
 
 
-def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None, np_seed=7, return_hydro=True):
+def load_CV_snapshots(
+    CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None, np_seed=7, return_hydro=True, pm_units=True
+):
     """
     NOTE for training of the HPM-"table" network, the gas particles don't actually need to exist in all snapshots
     """
@@ -25,6 +27,7 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
     # list all snapshots
     SNAPSHOTS = glob.glob(os.path.join(CV_SIM, "snapshot_???.hdf5"))
     SNAPSHOTS.sort()
+    # print(f"Found snapshots {SNAPSHOTS}")
 
     if i_snapshots is not None:
         SNAPSHOTS = [SNAPSHOTS[i] for i in i_snapshots]
@@ -49,6 +52,10 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
                 else:
                     gas_ids_intersect = np.intersect1d(gas_ids_intersect, gas_ids)
 
+            print(
+                f"There are {len(gas_ids_intersect)} ({100*len(gas_ids_intersect)/256**3:.2f}%) gas particles that"
+                f" exist in all snapshots"
+            )
             rng = np.random.default_rng(np_seed)
             gas_sub_ids = rng.choice(gas_ids_intersect, parts_per_dim**3, replace=False)
     else:
@@ -58,6 +65,7 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
         "scales": [],
         "dm_poss": [],
         "dm_vels": [],
+        "dm_masss": [],
     }
     if return_hydro:
         snapshot_dict.update(
@@ -99,6 +107,18 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
             # NOTE this mysterious factor seems to be included in readgadget.read_block
             dm_vel *= np.sqrt(scale_factor)
 
+            try:
+                dm_mass_msun = data["PartType1/Masses"][:] * 1e10  # Msun/h
+                assert len(jnp.unique(dm_mass_msun)) == 1
+                dm_mass_msun = dm_mass_msun[0]
+            except KeyError:
+                dm_mass_msun = data["Header"].attrs["MassTable"][1] * 1e10  # Msun/h
+
+            if pm_units:
+                dm_mass = cosmo.Omega_c / (cosmo.Omega_c + cosmo.Omega_b) if return_hydro else 1.0
+            else:
+                dm_mass = dm_mass_msun
+
             if subsample_particles:
                 dm_ids = np.argsort(data["PartType1/ParticleIDs"][:])
                 dm_pos = dm_pos[dm_ids]
@@ -108,6 +128,7 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
 
             snapshot_dict["dm_poss"].append(dm_pos)
             snapshot_dict["dm_vels"].append(dm_vel)
+            snapshot_dict["dm_masss"].append(jnp.full(dm_pos.shape[0], dm_mass))
 
             # gas #####################################################################################################
             if return_hydro:
@@ -120,7 +141,10 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
                 gas_vel *= np.sqrt(scale_factor)
 
                 gas_mass = data["PartType0/Masses"][:] * 1e10  # Msun/h
-                gas_mass /= masses[1]  # dm_mass per particle
+                if pm_units:
+                    gas_mass /= dm_mass_msun + jnp.mean(
+                        gas_mass
+                    )  # [dm_mass] per particle like ~ Omega_b / (Omega_c + Omega_b)
 
                 # density
                 rho_gas = cic_paint(jnp.zeros([mesh_per_dim] * 3), gas_pos, gas_mass)
@@ -134,23 +158,7 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
                 gas_U *= scale_factor
 
                 gamma = 5.0 / 3.0
-
-                # P_gas = cic_paint(
-                #     jnp.zeros([mesh_per_dim] * 3), gas_pos, (gamma - 1.0) * gas_U * cosmo.Omega_b / cosmo.Omega_c
-                # )  # dark matter particle mass units, not Msun/h
-                # P_gas = cic_paint(jnp.zeros([mesh_per_dim] * 3), gas_pos, (gamma - 1.0) * gas_U * gas_mass)
-
-                # the rho factor is implicitly included in the cic_paint
-                # P_gas = cic_paint(jnp.zeros([mesh_per_dim] * 3), gas_pos, (gamma - 1.0) * gas_U * gas_mass)
-                # gas_P = cic_read(P_gas, gas_pos)
-                # gas_P *= (mesh_per_dim / box_size) ** 3  #  dm_mass*pm_vel^2/dm_pos^3
-
-                # print(gas_P)
-
-                # TODO
-                gas_P = (gamma - 1.0) * gas_U * gas_rho
-                gas_P *= (mesh_per_dim / box_size) ** 3
-                # print(gas_P)
+                gas_P = (gamma - 1.0) * gas_U * gas_rho  #  dm_mass*pm_vel^2/dm_pos^3
 
                 # directly from CAMELS
                 # gas_rho = data["PartType0/Density"][:] * 1e10 * (1e3) ** 3  # (Msun/h)/(Mpc/h)^3
@@ -174,6 +182,16 @@ def load_CV_snapshots(CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None
                     gas_U = gas_U[gas_ids][gas_mask]
                     gas_P = gas_P[gas_ids][gas_mask]
                     gas_T = gas_T[gas_ids][gas_mask]
+
+                    # NOTE pure randomness for debugging
+                    # gas_ids = rng.choice(np.arange(len(gas_pos)), parts_per_dim**3, replace=False)
+                    # gas_pos = gas_pos[gas_ids]
+                    # gas_vel = gas_vel[gas_ids]
+                    # gas_mass = gas_mass[gas_ids]
+                    # gas_rho = gas_rho[gas_ids]
+                    # gas_U = gas_U[gas_ids]
+                    # gas_P = gas_P[gas_ids]
+                    # gas_T = gas_T[gas_ids]
 
                 snapshot_dict["gas_poss"].append(gas_pos)
                 snapshot_dict["gas_vels"].append(gas_vel)
