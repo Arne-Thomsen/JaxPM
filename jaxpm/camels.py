@@ -9,7 +9,14 @@ import jax_cosmo as jc
 
 
 def load_CV_snapshots(
-    CV_SIM, mesh_per_dim, parts_per_dim=None, i_snapshots=None, np_seed=7, return_hydro=True, pm_units=True
+    CV_SIM,
+    mesh_per_dim,
+    parts_per_dim=None,
+    i_snapshots=None,
+    snapshots=None,
+    np_seed=7,
+    return_hydro=True,
+    pm_units=True,
 ):
     """
     NOTE for training of the HPM-"table" network, the gas particles don't actually need to exist in all snapshots
@@ -28,9 +35,12 @@ def load_CV_snapshots(
     SNAPSHOTS = glob.glob(os.path.join(CV_SIM, "snapshot_???.hdf5"))
     SNAPSHOTS.sort()
 
+    assert i_snapshots is None or snapshots is None, "Only one of i_snapshots or snapshots can be specified"
     if i_snapshots is not None:
         SNAPSHOTS = [SNAPSHOTS[i] for i in i_snapshots]
         print(f"Using snapshots {SNAPSHOTS}")
+    if snapshots is not None:
+        SNAPSHOTS = [s for s in SNAPSHOTS if os.path.basename(s) in snapshots]
 
     subsample_particles = parts_per_dim is not None
     if subsample_particles:
@@ -45,6 +55,14 @@ def load_CV_snapshots(
             ):
                 with h5py.File(SNAPSHOT, "r") as data:
                     gas_ids = data["PartType0/ParticleIDs"][:]
+
+                # SIMBA produces some duplicate ids
+                if len(gas_ids) != len(np.unique(gas_ids)):
+                    unique, unique_counts = np.unique(gas_ids, return_counts=True)
+                    unique_singles = unique[unique_counts == 1]
+                    gas_ids_mask = np.isin(gas_ids, unique_singles)
+                    gas_ids = gas_ids[gas_ids_mask]
+                    print(f"Found {len(gas_ids_mask) - np.sum(gas_ids_mask)} duplicate gas particle IDs")
 
                 if i == 0:
                     gas_ids_intersect = gas_ids
@@ -92,7 +110,7 @@ def load_CV_snapshots(
                 masses = data["Header"].attrs["MassTable"] * 1e10  # masses of the particles in Msun/h
                 snapshot_dict["masses"] = masses
 
-            redshift = data["Header"].attrs["Redshift"]
+            # redshift = data["Header"].attrs["Redshift"]
             scale_factor = data["Header"].attrs["Time"]
 
             snapshot_dict["scales"].append(scale_factor)
@@ -108,7 +126,7 @@ def load_CV_snapshots(
 
             try:
                 dm_mass_msun = data["PartType1/Masses"][:] * 1e10  # Msun/h
-                assert len(jnp.unique(dm_mass_msun)) == 1
+                assert len(np.unique(dm_mass_msun)) == 1
                 dm_mass_msun = dm_mass_msun[0]
             except KeyError:
                 dm_mass_msun = data["Header"].attrs["MassTable"][1] * 1e10  # Msun/h
@@ -126,9 +144,15 @@ def load_CV_snapshots(
                 dm_pos = _subsample_ordered_particles_in_boxes(dm_pos, in_particles=256, out_particles=parts_per_dim)
                 dm_vel = _subsample_ordered_particles_in_boxes(dm_vel, in_particles=256, out_particles=parts_per_dim)
 
+                # print("TODO random and inconsistent DM particle subsampling")
+                # rng = np.random.default_rng(np_seed)
+                # dm_ids = rng.choice(np.arange(len(dm_pos)), parts_per_dim**3, replace=False)
+                # dm_pos = dm_pos[dm_ids]
+                # dm_vel = dm_vel[dm_ids]
+
             snapshot_dict["dm_poss"].append(dm_pos)
             snapshot_dict["dm_vels"].append(dm_vel)
-            snapshot_dict["dm_masss"].append(jnp.full(dm_pos.shape[0], dm_mass))
+            snapshot_dict["dm_masss"].append(np.full(dm_pos.shape[0], dm_mass))
 
             # gas #####################################################################################################
             if return_hydro:
@@ -142,12 +166,12 @@ def load_CV_snapshots(
 
                 gas_mass = data["PartType0/Masses"][:] * 1e10  # Msun/h
                 if pm_units:
-                    gas_mass /= dm_mass_msun + jnp.mean(
+                    gas_mass /= dm_mass_msun + np.mean(
                         gas_mass
                     )  # [dm_mass] per particle like ~ Omega_b / (Omega_c + Omega_b)
 
                 # density
-                rho_gas = cic_paint(jnp.zeros([mesh_per_dim] * 3), gas_pos, gas_mass)
+                rho_gas = cic_paint(np.zeros([mesh_per_dim] * 3), gas_pos, gas_mass)
                 gas_rho = cic_read(rho_gas, gas_pos)  # dm_mass/(Mpc/h)^3
                 gas_rho *= (mesh_per_dim / box_size) ** 3  # dm_mass/pm_len
 
@@ -175,8 +199,8 @@ def load_CV_snapshots(
                 if subsample_particles:
                     gas_ids = data["PartType0/ParticleIDs"][:]
                     i_sort = np.argsort(gas_ids)
-                    if len(gas_ids) != len(jnp.unique(gas_ids)):
-                        print(f"WARNING! {SNAPSHOT} has duplicate gas particle IDs")
+                    # if len(gas_ids) != len(np.unique(gas_ids)):
+                    #     print(f"WARNING! {SNAPSHOT} has duplicate gas particle IDs")
 
                     gas_mask = np.isin(gas_ids[i_sort], gas_sub_ids)
 
@@ -206,15 +230,15 @@ def load_CV_snapshots(
                 snapshot_dict["gas_Ps"].append(gas_P)
                 snapshot_dict["gas_Ts"].append(gas_T)
 
-    snapshot_dict["cosmo"] = cosmo
-    snapshot_dict["mesh_per_dim"] = mesh_per_dim
-
-    # convert lists to jnp.arrays for compatible shapes
+    # convert lists to np.arrays for compatible shapes
     for key, value in snapshot_dict.items():
         try:
-            snapshot_dict[key] = jnp.squeeze(jnp.stack(value, axis=0))
+            snapshot_dict[key] = np.squeeze(np.stack(value, axis=0))
         except (ValueError, TypeError):
-            pass
+            print(f"Could not stack {key}")
+
+    snapshot_dict["cosmo"] = cosmo
+    snapshot_dict["mesh_per_dim"] = mesh_per_dim
 
     return snapshot_dict
 
