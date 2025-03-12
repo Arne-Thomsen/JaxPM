@@ -104,7 +104,7 @@ class NeuralSplineFourierFilterNNX(nnx.Module):
         self.linear_w = nnx.Linear(self.d_latent, self.n_knots + 1, rngs=rngs)
         self.linear_k = nnx.Linear(self.d_latent, self.n_knots - 1, rngs=rngs)
 
-    def __call__(self, x, a):
+    def __call__(self, x, a, eps=1e-4):
         """
         x: array, scale, normalized to fftfreq default
         a: scalar, scale factor
@@ -124,7 +124,7 @@ class NeuralSplineFourierFilterNNX(nnx.Module):
         # Augment with repeating points for B-spline
         ak = jnp.concatenate([jnp.zeros((3,)), k, jnp.ones((3,))])
 
-        return _deBoorVectorized(jnp.clip(x / jnp.sqrt(3), 0, 1 - 1e-4), ak, w, 3)
+        return _deBoorVectorized(jnp.clip(x / jnp.sqrt(3), 0, 1 - eps), ak, w, 3)
 
 
 class MLP(nnx.Module):
@@ -137,20 +137,33 @@ class MLP(nnx.Module):
         rngs: nnx.Rngs,
         dropout_rate: float = 0.0,
         activation=jax.nn.relu,
+        use_layer_norm: bool = True,
     ):
         self.linear_in = nnx.Linear(d_in, d_hidden, rngs=rngs)
         self.linear_hid = [nnx.Linear(d_hidden, d_hidden, rngs=rngs) for _ in range(n_hidden)]
         self.linear_out = nnx.Linear(d_hidden, d_out, rngs=rngs)
         self.activation = activation
         self.dropout_rate = dropout_rate
-        self.dropout = [nnx.Dropout(dropout_rate, rngs=rngs) for _ in range(n_hidden)]
+        self.use_layer_norm = use_layer_norm
+
+        if self.dropout_rate > 0:
+            self.dropout = [nnx.Dropout(dropout_rate, rngs=rngs) for _ in range(n_hidden)]
+        if self.use_layer_norm:
+            self.norm_in = nnx.LayerNorm(d_hidden, rngs=rngs)
+            self.norm_hid = [nnx.LayerNorm(d_hidden, rngs=rngs) for _ in range(n_hidden)]
         self.d_out = d_out
 
     def __call__(self, x, training: bool = False):
-        x = self.activation(self.linear_in(x))
+        x = self.linear_in(x)
+        if self.use_layer_norm:
+            x = self.norm_in(x)
+        x = self.activation(x)
 
         for i, linear in enumerate(self.linear_hid):
-            x = self.activation(linear(x))
+            x = linear(x)
+            if self.use_layer_norm:
+                x = self.norm_hid[i](x)
+            x = self.activation(x)
             if training and self.dropout_rate > 0:
                 x = self.dropout[i](x, deterministic=not training)
 

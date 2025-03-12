@@ -91,23 +91,29 @@ def compare_field_evolution(
     scales,
     fields,
     include_pk=False,
+    include_reference=False,
     # values
     log=True,
     vmin=None,
     vmax=None,
     shared_colorbar=True,
     individual_colorbars=False,
+    box_size=25.0,
     # cosmetics
     title=None,
     col_titles=None,
     cmap="magma",
+    out_dir=None,
 ):
     n_scales = len(scales)
     n_runs = len(fields)
+    colors = sns.color_palette("tab10", n_colors=n_runs)
 
     fields_2d = fields.sum(axis=2)
     if log:
         fields_2d = jnp.log10(fields_2d)
+
+    delta_fields = fields_2d[0] - fields_2d[1:]
 
     if shared_colorbar:
         vmin = vmin if vmin is not None else fields_2d.min()
@@ -117,6 +123,8 @@ def compare_field_evolution(
     ncols = n_runs
     if include_pk:
         ncols += 1
+    if include_reference:
+        ncols += 2 + n_runs - 1
 
     fig, ax = plt.subplots(
         nrows=nrows, ncols=ncols, figsize=(2 * ncols, 2 * nrows), constrained_layout=True, sharey="col", sharex="col"
@@ -147,9 +155,9 @@ def compare_field_evolution(
             def jit_power_spectrum(field):
                 return power_spectrum(
                     compensate_cic(field),
-                    boxsize=np.array([25.0] * 3),
-                    kmin=np.pi / 25.0,
-                    dk=2 * np.pi / 25.0,
+                    boxsize=np.array([box_size] * 3),
+                    kmin=np.pi / box_size,
+                    dk=2 * np.pi / box_size,
                 )
 
             @jax.jit
@@ -157,9 +165,9 @@ def compare_field_evolution(
                 return cross_correlation_coefficients(
                     compensate_cic(field_a),
                     compensate_cic(field_b),
-                    boxsize=np.array([25.0] * 3),
-                    kmin=np.pi / 25.0,
-                    dk=2 * np.pi / 25.0,
+                    boxsize=np.array([box_size] * 3),
+                    kmin=np.pi / box_size,
+                    dk=2 * np.pi / box_size,
                 )
 
             if include_pk:
@@ -170,6 +178,39 @@ def compare_field_evolution(
                 ax[0, axis].legend()
                 ax[0, axis].set(title="power spectrum")
                 ax[n_scales - 1, axis].set(xlabel=r"$k$ [$h \ \mathrm{Mpc}^{-1}$]")
+
+            if include_reference and j != 0:
+                # residual map
+                axis = n_runs + j
+                im_delta = ax[i, axis].imshow(
+                    delta_fields[j - 1, i],
+                    cmap=cmap,
+                    vmin=delta_fields.min(),
+                    vmax=delta_fields.max(),
+                )
+                ax[i, axis].set_xticks([])
+                ax[i, axis].set_yticks([])
+
+                # normalized power spectrum
+                _, pk0 = jit_power_spectrum(fields[0, i])
+                ax[i, -2].axhline(0.0, color=colors[0], linestyle="--")
+                ax[i, -2].plot(k, pk / pk0 - 1, label=label, color=colors[j])
+                ax[i, -2].set(xscale="log")
+                ax[i, -2].set(ylabel=r"$P(k)/P_\text{ref} - 1$")
+
+                # normalized cross-correlation
+                k, pck = jit_cross_correlation(fields[0, i], fields[j, i])
+                ax[i, -1].axhline(1.0, color=colors[0], linestyle="--")
+                ax[i, -1].plot(k, pck / jnp.sqrt(pk * pk0), label=label, color=colors[j])
+                ax[i, -1].set(xscale="log")
+                ax[i, -1].set(ylabel=r"$P_\text{cross}(k)/\sqrt{P_\text{ref}(k) P(k)}$")
+
+                if i == 0:
+                    ax[i, -2].set(title="normalized\n power spectrum")
+                    ax[i, -1].set(title="normalized\n cross-correlation")
+                if i == n_scales - 1:
+                    ax[i, -2].set(xlabel=r"$k$ [$h \ \mathrm{Mpc}^{-1}$]")
+                    ax[i, -1].set(xlabel=r"$k$ [$h \ \mathrm{Mpc}^{-1}$]")
 
     for i, scale in enumerate(scales):
         ax[i, 0].set_ylabel(f"{scale:.4f}", fontsize=12)
@@ -184,6 +225,9 @@ def compare_field_evolution(
     if title is not None:
         fig.suptitle(title, fontsize=16, y=1.05)
 
+    if out_dir is not None:
+        plt.savefig(out_dir + ".png", dpi=100, bbox_inches="tight")
+
 
 def compare_particle_evolution(
     mesh_shape,
@@ -194,6 +238,7 @@ def compare_particle_evolution(
     include_reference=False,
     # values
     log=True,
+    arcsinh=False,
     vmin=None,
     vmax=None,
     shared_colorbar=True,
@@ -219,6 +264,9 @@ def compare_particle_evolution(
     fields_2d = fields.sum(axis=2)
     if log:
         fields_2d = jnp.log10(fields_2d)
+    if arcsinh:
+        fields_2d = jnp.arcsinh(fields_2d)
+    assert not (log and arcsinh), "Cannot apply both log and arcsinh transformations"
 
     delta_fields = fields_2d[0] - fields_2d[1:]
 
@@ -242,8 +290,12 @@ def compare_particle_evolution(
             label = col_titles[j] if col_titles is not None else None
 
             if individual_colorbars:
-                vmin = vmin if vmin is not None else fields_2d[0].min()
-                vmax = vmax if vmax is not None else fields_2d[0].max()
+                # vmin = vmin if vmin is not None else fields_2d[j, i].min()
+                # vmax = vmax if vmax is not None else fields_2d[j, i].max()
+                vmin = vmin if vmin is not None else jnp.quantile(fields_2d[j, i], 0.01)
+                vmax = vmax if vmax is not None else jnp.quantile(fields_2d[j, i], 0.99)
+
+                print(fields_2d[j, i].shape)
 
             im = ax[i, j].imshow(
                 fields_2d[j, i],
