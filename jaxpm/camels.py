@@ -9,14 +9,17 @@ import jax_cosmo as jc
 
 
 def load_CV_snapshots(
-    CV_SIM,
+    CV,
     mesh_per_dim,
     parts_per_dim=None,
     i_snapshots=None,
     snapshots=None,
     np_seed=7,
-    return_hydro=True,
+    hydro=True,
     pm_units=True,
+    # simulation
+    CAMELS="/cluster/work/refregier/athomsen/flatiron/CAMELS",
+    CODE="SIMBA",
 ):
     """
     NOTE for training of the HPM-"table" network, the gas particles don't actually need to exist in all snapshots
@@ -31,22 +34,36 @@ def load_CV_snapshots(
         sigma8=0.8,
     )
 
-    # list all snapshots
-    SNAPSHOTS = glob.glob(os.path.join(CV_SIM, "snapshot_???.hdf5"))
-    SNAPSHOTS.sort()
+    if not hydro:
+        CODE += "_DM"
 
+    RUN = os.path.join(CODE, "CV", CV)
+    SIM = os.path.join(CAMELS, "Sims", RUN)
+    CAT = os.path.join(CAMELS, "FOF_Subfind", RUN)
+
+    # list all snapshots
+    SNAPSHOTS = glob.glob(os.path.join(SIM, "snapshot_???.hdf5"))
+    CATALOGS = glob.glob(os.path.join(CAT, "groups_???.hdf5"))
+    assert len(SNAPSHOTS) == len(CATALOGS)
+
+    SNAPSHOTS.sort()
+    CATALOGS.sort()
+
+    # subselect snapshots
     assert i_snapshots is None or snapshots is None, "Only one of i_snapshots or snapshots can be specified"
     if i_snapshots is not None:
         SNAPSHOTS = [SNAPSHOTS[i] for i in i_snapshots]
+        CATALOGS = [CATALOGS[i] for i in i_snapshots]
         print(f"Using snapshots {SNAPSHOTS}")
     if snapshots is not None:
         SNAPSHOTS = [s for s in SNAPSHOTS if os.path.basename(s) in snapshots]
+        CATALOGS = [s for s in CATALOGS if os.path.basename(s) in snapshots]
 
     subsample_particles = parts_per_dim is not None
     if subsample_particles:
         print(f"Selecting {parts_per_dim**3} dark matter (deterministic)")
 
-        if return_hydro:
+        if hydro:
             print(f"Selecting {parts_per_dim**3} gas particles (random)")
 
             # only consider gas particles that exist for all snapshots
@@ -80,13 +97,19 @@ def load_CV_snapshots(
 
     snapshot_dict = {
         "scales": [],
+        "dm_ids": [],
         "dm_poss": [],
         "dm_vels": [],
         "dm_masss": [],
+        "h_poss": [],
+        "h_masss": [],
+        "h_lens": [],
+        "h_ids": [],
     }
-    if return_hydro:
+    if hydro:
         snapshot_dict.update(
             {
+                "gas_ids": [],
                 "gas_poss": [],
                 "gas_vels": [],
                 "gas_masss": [],
@@ -97,7 +120,9 @@ def load_CV_snapshots(
             }
         )
 
-    for i, SNAPSHOT in tqdm.tqdm(enumerate(SNAPSHOTS), total=len(SNAPSHOTS), desc="loading snapshots"):
+    for i, (SNAPSHOT, CATALOG) in tqdm.tqdm(
+        enumerate(zip(SNAPSHOTS, CATALOGS)), total=len(SNAPSHOTS), desc="loading snapshots"
+    ):
         with h5py.File(SNAPSHOT, "r") as data:
             # constants ###############################################################################################
             if i == 0:
@@ -116,6 +141,8 @@ def load_CV_snapshots(
             snapshot_dict["scales"].append(scale_factor)
 
             # dark matter #############################################################################################
+            dm_ids = data["PartType1/ParticleIDs"][:]
+
             dm_pos = data["PartType1/Coordinates"][:] / 1e3  # Mpc/h
             dm_pos *= mesh_per_dim / box_size  # rescaling positions to grid coordinates
 
@@ -132,30 +159,28 @@ def load_CV_snapshots(
                 dm_mass_msun = data["Header"].attrs["MassTable"][1] * 1e10  # Msun/h
 
             if pm_units:
-                dm_mass = cosmo.Omega_c / (cosmo.Omega_c + cosmo.Omega_b) if return_hydro else 1.0
+                dm_mass = cosmo.Omega_c / (cosmo.Omega_c + cosmo.Omega_b) if hydro else 1.0
             else:
                 dm_mass = dm_mass_msun
 
             if subsample_particles:
-                dm_ids = data["PartType1/ParticleIDs"][:]
                 i_sort = np.argsort(dm_ids)
+                dm_ids = dm_ids[i_sort]
                 dm_pos = dm_pos[i_sort]
                 dm_vel = dm_vel[i_sort]
+                dm_ids = _subsample_ordered_particles_in_boxes(dm_ids, in_particles=256, out_particles=parts_per_dim)
                 dm_pos = _subsample_ordered_particles_in_boxes(dm_pos, in_particles=256, out_particles=parts_per_dim)
                 dm_vel = _subsample_ordered_particles_in_boxes(dm_vel, in_particles=256, out_particles=parts_per_dim)
 
-                # print("TODO random and inconsistent DM particle subsampling")
-                # rng = np.random.default_rng(np_seed)
-                # dm_ids = rng.choice(np.arange(len(dm_pos)), parts_per_dim**3, replace=False)
-                # dm_pos = dm_pos[dm_ids]
-                # dm_vel = dm_vel[dm_ids]
-
+            snapshot_dict["dm_ids"].append(dm_ids)
             snapshot_dict["dm_poss"].append(dm_pos)
             snapshot_dict["dm_vels"].append(dm_vel)
             snapshot_dict["dm_masss"].append(np.full(dm_pos.shape[0], dm_mass))
 
             # gas #####################################################################################################
-            if return_hydro:
+            if hydro:
+                gas_ids = data["PartType0/ParticleIDs"][:]
+
                 gas_pos = data["PartType0/Coordinates"][:] / 1e3  # Mpc/h
                 gas_pos *= mesh_per_dim / box_size  # rescaling positions to grid coordinates pm_len
 
@@ -197,20 +222,20 @@ def load_CV_snapshots(
                 gas_T = gas_U * (1.0 + 4.0 * yhelium) / (1.0 + yhelium + gas_ne) * 1e10 * (2.0 / 3.0) * m_p / k_B
 
                 if subsample_particles:
-                    gas_ids = data["PartType0/ParticleIDs"][:]
                     i_sort = np.argsort(gas_ids)
                     # if len(gas_ids) != len(np.unique(gas_ids)):
                     #     print(f"WARNING! {SNAPSHOT} has duplicate gas particle IDs")
 
-                    gas_mask = np.isin(gas_ids[i_sort], gas_sub_ids)
+                    gas_subselect_mask = np.isin(gas_ids[i_sort], gas_sub_ids)
 
-                    gas_pos = gas_pos[i_sort][gas_mask]
-                    gas_vel = gas_vel[i_sort][gas_mask]
-                    gas_mass = gas_mass[i_sort][gas_mask]
-                    gas_rho = gas_rho[i_sort][gas_mask]
-                    gas_U = gas_U[i_sort][gas_mask]
-                    gas_P = gas_P[i_sort][gas_mask]
-                    gas_T = gas_T[i_sort][gas_mask]
+                    gas_ids = gas_ids[i_sort][gas_subselect_mask]
+                    gas_pos = gas_pos[i_sort][gas_subselect_mask]
+                    gas_vel = gas_vel[i_sort][gas_subselect_mask]
+                    gas_mass = gas_mass[i_sort][gas_subselect_mask]
+                    gas_rho = gas_rho[i_sort][gas_subselect_mask]
+                    gas_U = gas_U[i_sort][gas_subselect_mask]
+                    gas_P = gas_P[i_sort][gas_subselect_mask]
+                    gas_T = gas_T[i_sort][gas_subselect_mask]
 
                     # NOTE pure randomness for debugging
                     # gas_ids = rng.choice(np.arange(len(gas_pos)), parts_per_dim**3, replace=False)
@@ -222,6 +247,7 @@ def load_CV_snapshots(
                     # gas_P = gas_P[gas_ids]
                     # gas_T = gas_T[gas_ids]
 
+                snapshot_dict["gas_ids"].append(gas_ids)
                 snapshot_dict["gas_poss"].append(gas_pos)
                 snapshot_dict["gas_vels"].append(gas_vel)
                 snapshot_dict["gas_masss"].append(gas_mass)
@@ -229,6 +255,18 @@ def load_CV_snapshots(
                 snapshot_dict["gas_Us"].append(gas_U)
                 snapshot_dict["gas_Ps"].append(gas_P)
                 snapshot_dict["gas_Ts"].append(gas_T)
+
+        # halos
+        with h5py.File(CATALOG, "r") as f:
+            h_pos = f["Group/GroupPos"][:] * mesh_per_dim / (1e3 * box_size)
+            h_mass = f["Group/GroupMass"][:] * 1e10
+            h_len = f["Group/GroupLen"][:]
+            h_ids = f["IDs"]["ID"][:]
+
+            snapshot_dict["h_poss"].append(h_pos)
+            snapshot_dict["h_masss"].append(h_mass)
+            snapshot_dict["h_lens"].append(h_len)
+            snapshot_dict["h_ids"].append(h_ids)
 
     # convert lists to np.arrays for compatible shapes
     for key, value in snapshot_dict.items():
@@ -251,7 +289,12 @@ def _subsample_ordered_particles_in_boxes(particles, in_particles=256, out_parti
 
     assert in_particles % out_particles == 0
 
-    dims = 3
+    if particles.ndim == 2:
+        dims = particles.shape[1]
+    elif particles.ndim == 1:
+        dims = 1
+        particles = particles[:, np.newaxis]
+
     sub_fac = in_particles // out_particles
 
     # divide the simulation volume into sub_fac x sub_fac x sub_fac boxes containing out_particles each
@@ -265,7 +308,7 @@ def _subsample_ordered_particles_in_boxes(particles, in_particles=256, out_parti
         ::sub_fac, ::sub_fac, ::sub_fac, :
     ].reshape([-1, dims])
 
-    return particles
+    return np.squeeze(particles)
 
 
 def preprocess_snapshots(snapshot_dict):
