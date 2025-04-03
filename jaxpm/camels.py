@@ -15,7 +15,7 @@ def load_CV_snapshots(
     i_snapshots=None,
     snapshots=None,
     np_seed=7,
-    hydro=True,
+    return_hydro=True,
     pm_units=True,
     # simulation
     CAMELS="/cluster/work/refregier/athomsen/flatiron/CAMELS",
@@ -34,7 +34,7 @@ def load_CV_snapshots(
         sigma8=0.8,
     )
 
-    if not hydro:
+    if not return_hydro:
         CODE += "_DM"
 
     RUN = os.path.join(CODE, "CV", CV)
@@ -44,26 +44,30 @@ def load_CV_snapshots(
     # list all snapshots
     SNAPSHOTS = glob.glob(os.path.join(SIM, "snapshot_???.hdf5"))
     CATALOGS = glob.glob(os.path.join(CAT, "groups_???.hdf5"))
-    assert len(SNAPSHOTS) == len(CATALOGS)
 
-    SNAPSHOTS.sort()
+    if return_halos := len(SNAPSHOTS) == len(CATALOGS):
+        print(f"Found matching catalogs")
+    else:
+        print(f"No matching catalogs found, returning only the snapshots")
+
     CATALOGS.sort()
+    SNAPSHOTS.sort()
 
     # subselect snapshots
     assert i_snapshots is None or snapshots is None, "Only one of i_snapshots or snapshots can be specified"
     if i_snapshots is not None:
         SNAPSHOTS = [SNAPSHOTS[i] for i in i_snapshots]
-        CATALOGS = [CATALOGS[i] for i in i_snapshots]
+        CATALOGS = [CATALOGS[i] for i in i_snapshots] if return_halos else None
         print(f"Using snapshots {SNAPSHOTS}")
     if snapshots is not None:
         SNAPSHOTS = [s for s in SNAPSHOTS if os.path.basename(s) in snapshots]
-        CATALOGS = [s for s in CATALOGS if os.path.basename(s) in snapshots]
+        CATALOGS = [s for s in CATALOGS if os.path.basename(s) in snapshots] if return_halos else None
 
     subsample_particles = parts_per_dim is not None
     if subsample_particles:
         print(f"Selecting {parts_per_dim**3} dark matter (deterministic)")
 
-        if hydro:
+        if return_hydro:
             print(f"Selecting {parts_per_dim**3} gas particles (random)")
 
             # only consider gas particles that exist for all snapshots
@@ -101,12 +105,17 @@ def load_CV_snapshots(
         "dm_poss": [],
         "dm_vels": [],
         "dm_masss": [],
-        "h_poss": [],
-        "h_masss": [],
-        "h_lens": [],
-        "h_ids": [],
     }
-    if hydro:
+    if return_halos:
+        snapshot_dict.update(
+            {
+                "h_poss": [],
+                "h_masss": [],
+                "h_lens": [],
+                "h_ids": [],
+            }
+        )
+    if return_hydro:
         snapshot_dict.update(
             {
                 "gas_ids": [],
@@ -120,9 +129,7 @@ def load_CV_snapshots(
             }
         )
 
-    for i, (SNAPSHOT, CATALOG) in tqdm.tqdm(
-        enumerate(zip(SNAPSHOTS, CATALOGS)), total=len(SNAPSHOTS), desc="loading snapshots"
-    ):
+    for i, SNAPSHOT in tqdm.tqdm(enumerate(SNAPSHOTS), total=len(SNAPSHOTS), desc="loading snapshots"):
         with h5py.File(SNAPSHOT, "r") as data:
             # constants ###############################################################################################
             if i == 0:
@@ -146,10 +153,13 @@ def load_CV_snapshots(
             dm_pos = data["PartType1/Coordinates"][:] / 1e3  # Mpc/h
             dm_pos *= mesh_per_dim / box_size  # rescaling positions to grid coordinates
 
-            dm_vel = data["PartType1/Velocities"][:]  # peculiar velocities in km/s
-            dm_vel *= mesh_per_dim * scale_factor / (box_size * 100)
-            # NOTE this mysterious factor seems to be included in readgadget.read_block
-            dm_vel *= np.sqrt(scale_factor)
+            dm_vel = data["PartType1/Velocities"][:]  # v_gadget in sqrt(a) km/s
+            dm_vel *= np.sqrt(scale_factor)  # -> v_peculiar in a km/s
+            dm_vel *= scale_factor  # -> v_swift in a^2 km/s
+            dm_vel *= (
+                mesh_per_dim / box_size
+            )  # -> pm length in a^2 km/s h/Mpc, where [mesh_per_dim] = int, [box_size] = Mpc/h
+            dm_vel /= 100  # -> pm velocities (a^2 H_0)
 
             try:
                 dm_mass_msun = data["PartType1/Masses"][:] * 1e10  # Msun/h
@@ -159,7 +169,7 @@ def load_CV_snapshots(
                 dm_mass_msun = data["Header"].attrs["MassTable"][1] * 1e10  # Msun/h
 
             if pm_units:
-                dm_mass = cosmo.Omega_c / (cosmo.Omega_c + cosmo.Omega_b) if hydro else 1.0
+                dm_mass = cosmo.Omega_c / (cosmo.Omega_c + cosmo.Omega_b) if return_hydro else 1.0
             else:
                 dm_mass = dm_mass_msun
 
@@ -178,16 +188,16 @@ def load_CV_snapshots(
             snapshot_dict["dm_masss"].append(np.full(dm_pos.shape[0], dm_mass))
 
             # gas #####################################################################################################
-            if hydro:
+            if return_hydro:
                 gas_ids = data["PartType0/ParticleIDs"][:]
 
                 gas_pos = data["PartType0/Coordinates"][:] / 1e3  # Mpc/h
                 gas_pos *= mesh_per_dim / box_size  # rescaling positions to grid coordinates pm_len
 
-                gas_vel = data["PartType0/Velocities"][:]  # peculiar velocities in km/s
-                gas_vel *= mesh_per_dim * scale_factor / (box_size * 100)  # pm_vel (scale for peculiar, 100 for Hubble
-                # NOTE this mysterious factor seems to be included in readgadget.read_block
+                gas_vel = data["PartType0/Velocities"][:]  # v_gadget in sqrt(a) km/s like for dark matter
+                # Gadget factor https://camels.readthedocs.io/en/latest/snapshots.html?highlight=velocity#initial-conditions
                 gas_vel *= np.sqrt(scale_factor)
+                gas_vel *= mesh_per_dim * scale_factor / (box_size * 100)  # pm_vel (scale for peculiar, 100 for Hubble
 
                 gas_mass = data["PartType0/Masses"][:] * 1e10  # Msun/h
                 if pm_units:
@@ -200,14 +210,16 @@ def load_CV_snapshots(
                 gas_rho = cic_read(rho_gas, gas_pos)  # dm_mass/(Mpc/h)^3
                 gas_rho *= (mesh_per_dim / box_size) ** 3  # dm_mass/pm_len
 
-                # pressure
+                # internal energy
                 gas_U = data["PartType0/InternalEnergy"][:]  # (km/s)^2
                 gas_U *= (mesh_per_dim * scale_factor / (box_size * 100)) ** 2  # rescale like the velocity, pm_vel^2
-                # NOTE same mysterious factor as for the velocity
-                gas_U *= scale_factor
 
+                # pressure
                 gamma = 5.0 / 3.0
                 gas_P = (gamma - 1.0) * gas_U * gas_rho  #  dm_mass*pm_vel^2/dm_pos^3
+
+                # make comoving
+                gas_P *= scale_factor ** (3 * gamma)
 
                 if not pm_units:
                     gas_rho = data["PartType0/Density"][:] * 1e10 * (1e3) ** 3  # (Msun/h)/(Mpc/h)^3
@@ -257,16 +269,18 @@ def load_CV_snapshots(
                 snapshot_dict["gas_Ts"].append(gas_T)
 
         # halos
-        with h5py.File(CATALOG, "r") as f:
-            h_pos = f["Group/GroupPos"][:] * mesh_per_dim / (1e3 * box_size)
-            h_mass = f["Group/GroupMass"][:] * 1e10
-            h_len = f["Group/GroupLen"][:]
-            h_ids = f["IDs"]["ID"][:]
+        if return_halos:
+            CATALOG = CATALOGS[i]
+            with h5py.File(CATALOG, "r") as f:
+                h_pos = f["Group/GroupPos"][:] * mesh_per_dim / (1e3 * box_size)
+                h_mass = f["Group/GroupMass"][:] * 1e10
+                h_len = f["Group/GroupLen"][:]
+                h_ids = f["IDs"]["ID"][:]
 
-            snapshot_dict["h_poss"].append(h_pos)
-            snapshot_dict["h_masss"].append(h_mass)
-            snapshot_dict["h_lens"].append(h_len)
-            snapshot_dict["h_ids"].append(h_ids)
+                snapshot_dict["h_poss"].append(h_pos)
+                snapshot_dict["h_masss"].append(h_mass)
+                snapshot_dict["h_lens"].append(h_len)
+                snapshot_dict["h_ids"].append(h_ids)
 
     # convert lists to np.arrays for compatible shapes
     for key, value in snapshot_dict.items():
