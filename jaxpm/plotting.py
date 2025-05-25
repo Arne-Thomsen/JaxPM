@@ -58,8 +58,10 @@ def plot_particle_evolution(
     for j in tqdm(range(nrows)):
         for k in range(ncols):
             if individual_colorbars:
-                vmin = vmin if vmin is not None else fields[0].min()
-                vmax = vmax if vmax is not None else fields[0].max()
+                vmin = None
+                vmax = None
+                # vmin = fields[i].min()
+                # vmax = fields[i].max()
 
             im = ax[j, k].imshow(
                 fields[i],
@@ -247,6 +249,7 @@ def compare_particle_evolution(
     title=None,
     col_titles=None,
     cmap="magma",
+    out_dir=None,
 ):
     assert 3 == len(mesh_shape) == positions[0].shape[-1]
     assert not (shared_colorbar and individual_colorbars)
@@ -292,10 +295,12 @@ def compare_particle_evolution(
             if individual_colorbars:
                 # vmin = vmin if vmin is not None else fields_2d[j, i].min()
                 # vmax = vmax if vmax is not None else fields_2d[j, i].max()
-                vmin = vmin if vmin is not None else jnp.quantile(fields_2d[j, i], 0.01)
-                vmax = vmax if vmax is not None else jnp.quantile(fields_2d[j, i], 0.99)
-
-                print(fields_2d[j, i].shape)
+                # vmin = jnp.quantile(fields_2d[j, i], 0.01)
+                # vmax = jnp.quantile(fields_2d[j, i], 0.99)
+                vmin = fields_2d[j, i].min()
+                vmax = fields_2d[j, i].max()
+                # vmin = None
+                # vmax = None
 
             im = ax[i, j].imshow(
                 fields_2d[j, i],
@@ -395,6 +400,9 @@ def compare_particle_evolution(
 
     if title is not None:
         fig.suptitle(title, fontsize=16, y=1.05)
+
+    if out_dir is not None:
+        plt.savefig(out_dir + ".png", dpi=100, bbox_inches="tight")
 
 
 def plot_gas_features(

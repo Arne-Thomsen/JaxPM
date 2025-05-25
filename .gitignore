@@ -2,6 +2,8 @@ settings.json
 *.DS_Store
 checkpoints/
 logs/
+*.png
+*.jpg
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
