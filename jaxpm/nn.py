@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 
-from jaxpm.painting import cic_read
+from jaxpm.painting import cic_paint, cic_read
 
 import haiku as hk
 from flax import nnx
@@ -137,38 +137,314 @@ class MLP(nnx.Module):
         rngs: nnx.Rngs,
         dropout_rate: float = 0.0,
         activation=jax.nn.relu,
-        use_layer_norm: bool = True,
+        norm_type: str = "layer",
     ):
         self.linear_in = nnx.Linear(d_in, d_hidden, rngs=rngs)
         self.linear_hid = [nnx.Linear(d_hidden, d_hidden, rngs=rngs) for _ in range(n_hidden)]
         self.linear_out = nnx.Linear(d_hidden, d_out, rngs=rngs)
         self.activation = activation
         self.dropout_rate = dropout_rate
-        self.use_layer_norm = use_layer_norm
+        self.norm_type = norm_type
+
+        if isinstance(self.activation, str):
+            if self.activation == "relu":
+                self.activation = jax.nn.relu
+            elif self.activation == "swish":
+                self.activation = jax.nn.swish
+            elif self.activation == "sigmoid":
+                self.activation = jax.nn.sigmoid
+            else:
+                raise ValueError(f"Unsupported activation function: {self.activation}")
 
         if self.dropout_rate > 0:
             self.dropout = [nnx.Dropout(dropout_rate, rngs=rngs) for _ in range(n_hidden)]
-        if self.use_layer_norm:
+
+        if self.norm_type == "layer":
             self.norm_in = nnx.LayerNorm(d_hidden, rngs=rngs)
             self.norm_hid = [nnx.LayerNorm(d_hidden, rngs=rngs) for _ in range(n_hidden)]
+        elif self.norm_type == "batch":
+            self.norm_in = nnx.BatchNorm(d_hidden, rngs=rngs)
+            self.norm_hid = [nnx.BatchNorm(d_hidden, rngs=rngs) for _ in range(n_hidden)]
+
         self.d_out = d_out
 
     def __call__(self, x, training: bool = False):
         x = self.linear_in(x)
-        if self.use_layer_norm:
+
+        if self.norm_type == "layer":
             x = self.norm_in(x)
+        elif self.norm_type == "batch":
+            x = self.norm_in(x, use_running_average=not training)
+
         x = self.activation(x)
 
         for i, linear in enumerate(self.linear_hid):
             x = linear(x)
-            if self.use_layer_norm:
+
+            if self.norm_type == "layer":
                 x = self.norm_hid[i](x)
+            elif self.norm_type == "batch":
+                x = self.norm_hid[i](x, use_running_average=not training)
+
             x = self.activation(x)
             if training and self.dropout_rate > 0:
                 x = self.dropout[i](x, deterministic=not training)
 
         x = self.linear_out(x)
         return x
+
+
+# class ResidualMLP(nnx.Module):
+#     def __init__(
+#         self,
+#         d_in: int,
+#         d_out: int,
+#         d_hidden: int,
+#         n_hidden: int,
+#         rngs: nnx.Rngs,
+#         dropout_rate: float = 0.0,
+#         activation=jax.nn.relu,
+#         norm_type: str = "batch",
+#     ):
+#         self.linear_in = nnx.Linear(d_in, d_hidden, rngs=rngs)
+#         self.linear_hid = [nnx.Linear(d_hidden, d_hidden, rngs=rngs) for _ in range(n_hidden)]
+#         self.linear_out = nnx.Linear(d_hidden, d_out, rngs=rngs)
+#         self.activation = activation
+#         self.dropout_rate = dropout_rate
+#         self.norm_type = norm_type
+
+#         if self.dropout_rate > 0:
+#             self.dropout = [nnx.Dropout(dropout_rate, rngs=rngs) for _ in range(n_hidden)]
+
+#         if self.norm_type == "layer":
+#             self.norm_in = nnx.LayerNorm(d_hidden, rngs=rngs)
+#             self.norm_hid = [nnx.LayerNorm(d_hidden, rngs=rngs) for _ in range(n_hidden)]
+#         elif self.norm_type == "batch":
+#             self.norm_in = nnx.BatchNorm(d_hidden, rngs=rngs)
+#             self.norm_hid = [nnx.BatchNorm(d_hidden, rngs=rngs) for _ in range(n_hidden)]
+
+#         self.d_out = d_out
+
+#     def residual_block(self, x, linear, linear_idx, norm=None, training=False):
+#         """Memory-efficient residual block implementation"""
+#         residual = x
+#         x = linear(x)
+#         if norm is not None:
+#             if self.norm_type == "layer":
+#                 x = norm(x)
+#             elif self.norm_type == "batch":
+#                 x = norm(x, use_running_average=not training)
+#         x = self.activation(x)
+#         if training and self.dropout_rate > 0:
+#             x = self.dropout[linear_idx](x, deterministic=not training)
+#         return residual + x
+
+#     def __call__(self, x, training: bool = False):
+#         # Input layer
+#         x = self.linear_in(x)
+#         if self.norm_type == "layer":
+#             x = self.norm_in(x)
+#         elif self.norm_type == "batch":
+#             x = self.norm_in(x, use_running_average=not training)
+#         x = self.activation(x)
+
+#         # Hidden layers with residual connections
+#         for i, linear in enumerate(self.linear_hid):
+#             # Use the memory-efficient residual block
+#             x = self.residual_block(
+#                 x, linear, i, norm=self.norm_hid[i] if hasattr(self, "norm_hid") else None, training=training
+#             )
+
+#         # Output layer
+#         x = self.linear_out(x)
+#         return x
+
+
+class ResidualMLP(nnx.Module):
+    def __init__(
+        self,
+        d_in: int,
+        d_out: int,
+        d_hidden: int,
+        n_blocks: int,
+        rngs: nnx.Rngs,
+        dropout_rate: float = 0.0,
+        activation=jax.nn.relu,
+        norm_type: str = "batch",
+    ):
+        """
+        Initialize a Residual MLP with skip connections.
+
+        Args:
+            d_in: Input dimension
+            d_out: Output dimension
+            d_hidden: Hidden dimension used throughout the network
+            n_blocks: Number of residual blocks
+            rngs: Random number generators
+            dropout_rate: Dropout rate (if > 0)
+            activation: Activation function
+            norm_type: Normalization type ("batch", "layer" or None)
+        """
+        # Input projection
+        self.input_proj = nnx.Linear(d_in, d_hidden, rngs=rngs)
+
+        # Residual blocks
+        self.blocks = []
+        for _ in range(n_blocks):
+            block = {
+                "linear1": nnx.Linear(d_hidden, d_hidden, rngs=rngs),
+                "linear2": nnx.Linear(d_hidden, d_hidden, rngs=rngs),
+            }
+
+            if norm_type == "layer":
+                block["norm1"] = nnx.LayerNorm(d_hidden, rngs=rngs)
+                block["norm2"] = nnx.LayerNorm(d_hidden, rngs=rngs)
+            elif norm_type == "batch":
+                block["norm1"] = nnx.BatchNorm(d_hidden, rngs=rngs)
+                block["norm2"] = nnx.BatchNorm(d_hidden, rngs=rngs)
+
+            if dropout_rate > 0:
+                block["dropout"] = nnx.Dropout(dropout_rate, rngs=rngs)
+
+            self.blocks.append(block)
+
+        # Output projection
+        self.output_proj = nnx.Linear(d_hidden, d_out, rngs=rngs)
+
+        # Store parameters
+        self.activation = activation
+        self.norm_type = norm_type
+        self.dropout_rate = dropout_rate
+        self.d_out = d_out
+
+    def __call__(self, x, training: bool = False):
+        # Input projection
+        x = self.input_proj(x)
+
+        # Process through residual blocks
+        for block in self.blocks:
+            # Store the input for the skip connection
+            residual = x
+
+            # First layer
+            x = block["linear1"](x)
+            if self.norm_type == "layer":
+                x = block["norm1"](x)
+            elif self.norm_type == "batch":
+                x = block["norm1"](x, use_running_average=not training)
+            x = self.activation(x)
+
+            # Second layer
+            x = block["linear2"](x)
+            if self.norm_type == "layer":
+                x = block["norm2"](x)
+            elif self.norm_type == "batch":
+                x = block["norm2"](x, use_running_average=not training)
+
+            # Apply dropout if needed
+            if training and self.dropout_rate > 0:
+                x = block["dropout"](x, deterministic=not training)
+
+            # Add the residual connection
+            x = x + residual
+
+            # Apply activation after the residual connection
+            x = self.activation(x)
+
+        # Output projection
+        x = self.output_proj(x)
+
+        return x
+
+
+# class ResidualMLP(nnx.Module):
+#     def __init__(
+#         self,
+#         d_in: int,
+#         d_out: int,
+#         d_hidden: int,
+#         n_hidden: int,
+#         rngs: nnx.Rngs,
+#         dropout_rate: float = 0.0,
+#         activation=jax.nn.relu,
+#         norm_type: str = "batch",
+#     ):
+#         self.activation = activation
+#         self.dropout_rate = dropout_rate
+#         self.norm_type = norm_type
+
+#         # Input layer
+#         self.linear_in = nnx.Linear(d_in, d_hidden, rngs=rngs)
+#         # Projection for input residual if dimensions don't match
+#         self.proj_in = None if d_in == d_hidden else nnx.Linear(d_in, d_hidden, rngs=rngs)
+
+#         # Hidden layers
+#         self.linear_hid = [nnx.Linear(d_hidden, d_hidden, rngs=rngs) for _ in range(n_hidden)]
+
+#         # Output layer
+#         self.linear_out = nnx.Linear(d_hidden, d_out, rngs=rngs)
+#         # Projection for output residual if dimensions don't match
+#         self.proj_out = None if d_hidden == d_out else nnx.Linear(d_hidden, d_out, rngs=rngs)
+
+#         # Normalization layers
+#         if self.norm_type == "layer":
+#             self.norm_in = nnx.LayerNorm(d_hidden, rngs=rngs)
+#             self.norm_hid = [nnx.LayerNorm(d_hidden, rngs=rngs) for _ in range(n_hidden)]
+#         elif self.norm_type == "batch":
+#             self.norm_in = nnx.BatchNorm(d_hidden, rngs=rngs)
+#             self.norm_hid = [nnx.BatchNorm(d_hidden, rngs=rngs) for _ in range(n_hidden)]
+
+#         # Dropout layers
+#         if self.dropout_rate > 0:
+#             self.dropout = [nnx.Dropout(dropout_rate, rngs=rngs) for _ in range(n_hidden)]
+
+#     def __call__(self, x, training: bool = False):
+#         # Input layer with residual
+#         residual = x
+#         x = self.linear_in(x)
+
+#         if self.norm_type == "layer":
+#             x = self.norm_in(x)
+#         elif self.norm_type == "batch":
+#             x = self.norm_in(x, use_running_average=not training)
+
+#         x = self.activation(x)
+
+#         # Add residual connection for input layer
+#         if self.proj_in is not None:
+#             x = x + self.proj_in(residual)
+#         elif residual.shape == x.shape:
+#             x = x + residual
+
+#         # Hidden layers with residual connections
+#         for i, linear in enumerate(self.linear_hid):
+#             residual = x
+#             x = linear(x)
+
+#             if self.norm_type == "layer":
+#                 x = self.norm_hid[i](x)
+#             elif self.norm_type == "batch":
+#                 x = self.norm_hid[i](x, use_running_average=not training)
+
+#             x = self.activation(x)
+
+#             if training and self.dropout_rate > 0:
+#                 x = self.dropout[i](x, deterministic=not training)
+
+#             # Add residual connection
+#             x = x + residual
+
+#         # Output layer with residual
+#         residual = x
+#         x = self.linear_out(x)
+
+#         # Add residual connection for output layer
+#         if self.proj_out is not None:
+#             x = x + self.proj_out(residual)
+#         elif residual.shape == x.shape:
+#             x = x + residual
+
+#         return x
 
 
 class CNN(nnx.Module):
@@ -179,25 +455,327 @@ class CNN(nnx.Module):
         d_out: int,
         n_hidden: int,
         kernel_size: tuple = (3, 3, 3),
-        strides: int = 1,
         rngs: nnx.Rngs = nnx.Rngs(0),
         activation=jax.nn.relu,
+        norm_type: str = "layer",
+        use_residual: bool = False,
     ):
         self.d_out = d_out
+        self.norm_type = norm_type
+        self.use_residual = use_residual
 
-        self.conv_in = nnx.Conv(d_in, d_hidden, kernel_size, strides, padding="SAME", rngs=rngs)
+        self.conv_in = nnx.Conv(d_in, d_hidden, kernel_size, strides=1, padding="CIRCULAR", rngs=rngs)
         self.conv_hidden = [
-            nnx.Conv(d_hidden, d_hidden, kernel_size, strides, padding="SAME", rngs=rngs) for _ in range(n_hidden)
+            nnx.Conv(d_hidden, d_hidden, kernel_size, strides=1, padding="CIRCULAR", rngs=rngs)
+            for _ in range(n_hidden)
         ]
-        self.conv_out = nnx.Conv(d_hidden, d_out, kernel_size, strides, padding="SAME", rngs=rngs)
+        self.conv_out = nnx.Conv(d_hidden, d_out, kernel_size, strides=1, padding="CIRCULAR", rngs=rngs)
         self.activation = activation
 
-    def __call__(self, x):
+        if self.norm_type == "layer":
+            self.norm_in = nnx.LayerNorm(d_hidden, rngs=rngs)
+            self.norm_hidden = [nnx.LayerNorm(d_hidden, rngs=rngs) for _ in range(n_hidden)]
+            self.norm_out = nnx.LayerNorm(d_out, rngs=rngs)
+        elif self.norm_type == "batch":
+            print("Warning, updating the batch statistics is incompatible with jit")
+            self.norm_in = nnx.BatchNorm(d_hidden, rngs=rngs)
+            self.norm_hidden = [nnx.BatchNorm(d_hidden, rngs=rngs) for _ in range(n_hidden)]
+            self.norm_out = nnx.BatchNorm(d_out, rngs=rngs)
+
+    def __call__(self, x, training: bool = False):
+        if training:
+            print("Training mode")
+
         x = self.conv_in(x)
+
+        if self.norm_type == "layer":
+            x = self.norm_in(x)
+        elif self.norm_type == "batch":
+            x = self.norm_in(x, use_running_average=not training)
+
         x = self.activation(x)
+
+        for i, conv in enumerate(self.conv_hidden):
+            if self.use_residual:
+                residual = x
+
+            x = conv(x)
+
+            if self.norm_type == "layer":
+                x = self.norm_hidden[i](x)
+            elif self.norm_type == "batch":
+                x = self.norm_hidden[i](x, use_running_average=not training)
+
+            if self.use_residual:
+                x = x + residual
+
+            x = self.activation(x)
+
         x = self.conv_out(x)
 
         return x
+
+
+class ScaleConditionedCNN(nnx.Module):
+    def __init__(
+        self,
+        d_in,
+        d_hidden,
+        d_out,
+        n_hidden,
+        kernel_size,
+        rngs,
+        activation=jax.nn.swish,
+        use_residual=False,
+        norm_type="layer",
+    ):
+        self.activation = activation
+        self.use_residual = use_residual
+        self.norm_type = norm_type
+
+        # CNN
+        self.conv_in = nnx.Conv(d_in, d_hidden, kernel_size, padding="CIRCULAR", rngs=rngs)
+        self.conv_hidden = [
+            nnx.Conv(d_hidden, d_hidden, kernel_size, padding="CIRCULAR", rngs=rngs) for _ in range(n_hidden)
+        ]
+        self.conv_out = nnx.Conv(d_hidden, d_out, kernel_size, padding="CIRCULAR", rngs=rngs)
+
+        if self.norm_type == "layer":
+            self.norm_in = nnx.LayerNorm(d_hidden, rngs=rngs)
+            self.norm_hidden = [nnx.LayerNorm(d_hidden, rngs=rngs) for _ in range(n_hidden)]
+            self.norm_out = nnx.LayerNorm(d_out, rngs=rngs)
+
+        # scale conditioning https://arxiv.org/abs/1709.07871
+        self.scale_embed = nnx.Linear(1, d_hidden, rngs=rngs)
+        self.film_gamma = [nnx.Linear(d_hidden, d_hidden, rngs=rngs) for _ in range(n_hidden)]
+        self.film_beta = [nnx.Linear(d_hidden, d_hidden, rngs=rngs) for _ in range(n_hidden)]
+
+    def __call__(self, x, scale, training=False):
+        x = self.conv_in(x)
+
+        if self.norm_type == "layer":
+            x = self.norm_in(x)
+
+        x = self.activation(x)
+
+        scale_embedding = self.activation(self.scale_embed(scale.reshape(1, 1)))
+
+        # Hidden layers with scale conditioning
+        for i, conv in enumerate(self.conv_hidden):
+            if self.use_residual:
+                residual = x
+
+            x = conv(x)
+
+            if self.norm_type == "layer":
+                x = self.norm_hidden[i](x)
+
+            # Apply FiLM conditioning (scale and shift based on scale factor)
+            gamma = self.film_gamma[i](scale_embedding)
+            beta = self.film_beta[i](scale_embedding)
+
+            # Reshape for broadcasting
+            gamma = gamma.reshape(1, 1, 1, -1)
+            beta = beta.reshape(1, 1, 1, -1)
+
+            # Apply conditioning
+            x = x * gamma + beta
+
+            if self.use_residual:
+                x = x + residual
+
+            x = self.activation(x)
+
+        x = self.conv_out(x)
+        return x
+
+
+class CNN2(nnx.Module):
+    def __init__(
+        self,
+        d_in: int,
+        d_hidden: int,
+        d_out: int,
+        n_hidden: int,
+        kernel_size: tuple = (3, 3, 3),
+        rngs: nnx.Rngs = nnx.Rngs(0),
+        activation=jax.nn.relu,
+        norm_type: str = "layer",  # Default to layer norm which is more JIT-friendly
+        dropout_rate: float = 0.1,  # Add dropout by default
+        use_residual: bool = True,  # Enable residual connections by default
+    ):
+        super().__init__()
+        self.d_out = d_out
+        self.norm_type = norm_type
+        self.dropout_rate = dropout_rate
+        self.use_residual = use_residual
+
+        # Input convolution
+        self.conv_in = nnx.Conv(d_in, d_hidden, kernel_size, strides=1, padding="CIRCULAR", rngs=rngs)
+
+        # Hidden convolutions
+        self.conv_hidden = [
+            nnx.Conv(d_hidden, d_hidden, kernel_size, strides=1, padding="CIRCULAR", rngs=rngs)
+            for _ in range(n_hidden)
+        ]
+
+        # Output convolution
+        self.conv_out = nnx.Conv(d_hidden, d_out, kernel_size, strides=1, padding="CIRCULAR", rngs=rngs)
+
+        self.activation = activation
+
+        # Add projection layers for residual connections if dimensions don't match
+        if self.use_residual:
+            if d_in != d_hidden:
+                self.proj_in = nnx.Conv(d_in, d_hidden, (1, 1, 1), strides=1, padding="CIRCULAR", rngs=rngs)
+            if d_hidden != d_out:
+                self.proj_out = nnx.Conv(d_hidden, d_out, (1, 1, 1), strides=1, padding="CIRCULAR", rngs=rngs)
+
+        # Normalization layers
+        if self.norm_type == "layer":
+            self.norm_in = nnx.LayerNorm(d_hidden, rngs=rngs, reduction_axes=-1, feature_axes=-1)
+            self.norm_hidden = [
+                nnx.LayerNorm(d_hidden, rngs=rngs, reduction_axes=-1, feature_axes=-1) for _ in range(n_hidden)
+            ]
+            if use_residual:  # Only normalize output with residual connections
+                self.norm_out = nnx.LayerNorm(d_out, rngs=rngs, reduction_axes=-1, feature_axes=-1)
+        elif self.norm_type == "batch":
+            self.norm_in = nnx.BatchNorm(d_hidden, rngs=rngs)
+            self.norm_hidden = [nnx.BatchNorm(d_hidden, rngs=rngs) for _ in range(n_hidden)]
+            if use_residual:
+                self.norm_out = nnx.BatchNorm(d_out, rngs=rngs)
+
+        # Dropout layers
+        if self.dropout_rate > 0:
+            self.dropout = [nnx.Dropout(dropout_rate, rngs=rngs) for _ in range(n_hidden)]
+
+    def __call__(self, x, training: bool = False):
+        # Input layer
+        residual = x
+        x = self.conv_in(x)
+
+        if self.norm_type == "layer":
+            x = self.norm_in(x)
+        elif self.norm_type == "batch":
+            x = self.norm_in(x, use_running_average=not training)
+
+        x = self.activation(x)
+
+        # Add residual connection if needed
+        if self.use_residual:
+            if hasattr(self, "proj_in") and residual.shape != x.shape:
+                x = x + self.proj_in(residual)
+            elif residual.shape == x.shape:
+                x = x + residual
+
+        # Hidden layers with residual connections
+        for i, conv in enumerate(self.conv_hidden):
+            # Store for residual connection
+            if self.use_residual:
+                residual = x
+
+            # Convolution + normalization + activation
+            x = conv(x)
+
+            if self.norm_type == "layer":
+                x = self.norm_hidden[i](x)
+            elif self.norm_type == "batch":
+                x = self.norm_hidden[i](x, use_running_average=not training)
+
+            x = self.activation(x)
+
+            # Apply dropout if needed
+            if training and self.dropout_rate > 0:
+                x = self.dropout[i](x, deterministic=not training)
+
+            # Add residual connection
+            if self.use_residual:
+                x = x + residual
+
+        # Output layer with potential residual connection
+        if self.use_residual:
+            residual = x
+        x = self.conv_out(x)
+
+        # Apply output normalization and residual connection if needed
+        if self.use_residual:
+            if hasattr(self, "norm_out"):
+                if self.norm_type == "layer":
+                    x = self.norm_out(x)
+                elif self.norm_type == "batch":
+                    x = self.norm_out(x, use_running_average=not training)
+
+            if hasattr(self, "proj_out") and residual.shape != x.shape:
+                x = x + self.proj_out(residual)
+            elif residual.shape == x.shape:
+                x = x + residual
+
+        return x
+
+
+# class CNN(nnx.Module):
+#     def __init__(
+#         self,
+#         d_in: int,
+#         d_hidden: int,
+#         d_out: int,
+#         n_hidden: int,
+#         kernel_size: tuple = (3, 3, 3),
+#         strides: int = 1,
+#         rngs: nnx.Rngs = nnx.Rngs(0),
+#         activation=jax.nn.relu,
+#         norm_type: str = "batch",
+#         use_residual: bool = False,  # Add residual connection parameter
+#     ):
+#         self.d_out = d_out
+#         self.norm_type = norm_type
+#         self.use_residual = use_residual  # Store the parameter
+
+#         self.conv_in = nnx.Conv(d_in, d_hidden, kernel_size, strides, padding="CIRCULAR", rngs=rngs)
+#         self.conv_hidden = [
+#             nnx.Conv(d_hidden, d_hidden, kernel_size, strides, padding="CIRCULAR", rngs=rngs) for _ in range(n_hidden)
+#         ]
+#         self.conv_out = nnx.Conv(d_hidden, d_out, kernel_size, strides, padding="CIRCULAR", rngs=rngs)
+#         self.activation = activation
+
+#         if self.norm_type == "batch":
+#             self.norm_in = nnx.BatchNorm(d_hidden, rngs=rngs)
+#             self.norm_hidden = [nnx.BatchNorm(d_hidden, rngs=rngs) for _ in range(n_hidden)]
+#             self.norm_out = nnx.BatchNorm(d_out, rngs=rngs)
+
+#     def __call__(self, x, training: bool = False):
+#         # Input layer (no residual connection)
+#         x = self.conv_in(x)
+
+#         if self.norm_type == "batch":
+#             x = self.norm_in(x, use_running_average=not training)
+
+#         x = self.activation(x)
+
+#         # Hidden layers with optional residual connections
+#         for i, conv in enumerate(self.conv_hidden):
+#             # Save input for residual connection
+#             if self.use_residual:
+#                 residual = x
+
+#             # Apply convolution and normalization
+#             x = conv(x)
+#             if self.norm_type == "batch":
+#                 x = self.norm_hidden[i](x, use_running_average=not training)
+
+#             x = self.activation(x)
+
+#             # Add residual connection before activation
+#             if self.use_residual:
+#                 x = x + residual
+
+#         # Output layer (no residual connection)
+#         x = self.conv_out(x)
+
+#         if self.norm_type == "batch":
+#             x = self.norm_out(x, use_running_average=not training)
+
+#         return x
 
 
 class HybridNet(nnx.Module):
@@ -234,6 +812,58 @@ class HybridNet(nnx.Module):
         return x
 
 
+class ParticleToParticleNet(nnx.Module):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        hidden_features_mlp: int,
+        hidden_features_cnn: int,
+        num_layers_mlp: int,
+        num_layers_cnn: int,
+        rngs: nnx.Rngs,
+        dropout_rate: float = 0.0,
+        activation=jax.nn.relu,
+        norm_type: str = "batch",
+        batch_axis: bool = False,
+    ):
+        self.mlp = MLP(
+            in_features,
+            hidden_features_mlp,
+            out_features,
+            num_layers_mlp,
+            rngs=rngs,
+            dropout_rate=dropout_rate,
+            activation=activation,
+            norm_type=norm_type,
+        )
+
+        self.cnn = CNN(
+            in_features,
+            hidden_features_cnn,
+            out_features,
+            num_layers_cnn,
+            rngs=rngs,
+            activation=activation,
+            norm_type=norm_type,
+        )
+
+        self.linear_out = nnx.Linear(self.mlp.d_out + self.cnn.d_out, out_features, rngs=rngs)
+
+        # feature dimension
+        self.vcic_paint = jax.vmap(cic_paint, in_axes=(None, None, -1), out_axes=-1)
+        if batch_axis:
+            self.vcic_paint = jax.vmap(self.vcic_paint, in_axes=(0, 0, 0))
+
+        # feature dimension
+        self.vcic_read = jax.vmap(cic_read, in_axes=(-1, None), out_axes=-1)
+        if batch_axis:
+            self.vcic_read = jax.vmap(self.vcic_read, in_axes=(0, 0))
+
+    def __call__(self, x, training: bool = False):
+        pass
+
+
 class ResNetBlock3D(nnx.Module):
     def __init__(
         self,
@@ -247,9 +877,9 @@ class ResNetBlock3D(nnx.Module):
         self.strides = strides
         self.activation = activation
 
-        self.conv1 = nnx.Conv(channels, channels, kernel_size, strides, padding="SAME", rngs=rngs)
-        self.conv2 = nnx.Conv(channels, channels, kernel_size, 1, padding="SAME", rngs=rngs)
-        self.convres = nnx.Conv(channels, channels, (1, 1, 1), strides, padding="SAME", rngs=rngs)
+        self.conv1 = nnx.Conv(channels, channels, kernel_size, strides, padding="CIRCULAR", rngs=rngs)
+        self.conv2 = nnx.Conv(channels, channels, kernel_size, 1, padding="CIRCULAR", rngs=rngs)
+        self.convres = nnx.Conv(channels, channels, (1, 1, 1), strides, padding="CIRCULAR", rngs=rngs)
 
         self.norm1 = nnx.BatchNorm(channels, rngs=rngs)
         self.norm2 = nnx.BatchNorm(channels, rngs=rngs)
@@ -287,18 +917,20 @@ class ResNet3D(nnx.Module):
         kernel_size: tuple = (3, 3, 3),
         strides: int = 1,
     ):
-        self.conv_in = nnx.Conv(d_in, d_hidden, kernel_size, 1, padding="SAME", rngs=rngs)
+        self.conv_in = nnx.Conv(d_in, d_hidden, kernel_size, 1, padding="CIRCULAR", rngs=rngs)
         self.blocks = [ResNetBlock3D(d_hidden, kernel_size, strides, rngs=rngs) for _ in range(num_blocks)]
-        self.conv_out = nnx.Conv(d_hidden, d_out, kernel_size, 1, padding="SAME", rngs=rngs)
+        self.conv_out = nnx.Conv(d_hidden, d_out, kernel_size, 1, padding="CIRCULAR", rngs=rngs)
 
         # self.norm = nnx.BatchNorm()
 
-        # self.flatten = Flatten()
+        self.flatten = Flatten()
         # # self.linear_hidden = nnx.Linear(d_hidden, d_hidden, rngs=rngs)
         # # self.linear_out = nnx.Linear(d_out, d_out, rngs=rngs)
         # # TODO
         # self.linear_hidden = nnx.Linear(8192, 64, rngs=rngs)
-        # self.linear_out = nnx.Linear(64, d_out, rngs=rngs)
+        # self.linear_hidden = nnx.Linear(262144, 64, rngs=rngs)
+        self.linear_hidden = nnx.Linear(4096, 64, rngs=rngs)
+        self.linear_out = nnx.Linear(64, d_out, rngs=rngs)
 
     def __call__(self, x, training: bool = False):
         x = self.conv_in(x)
@@ -307,12 +939,12 @@ class ResNet3D(nnx.Module):
         for block in self.blocks:
             x = block(x, training=training)
 
-        # x = self.flatten(x)
-        # x = self.linear_hidden(x)
-        # x = self.linear_out(x)
-
         x = self.conv_out(x)
         x = jnp.squeeze(x)
+
+        x = self.flatten(x)
+        x = self.linear_hidden(x)
+        x = self.linear_out(x)
 
         return x
 
