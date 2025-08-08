@@ -406,7 +406,18 @@ def compare_particle_evolution(
 
 
 def plot_gas_features(
-    scales, field_dict, features=["rho_gas", "fscalar_gas", "vel_disp_gas", "vel_div_gas", "P_gas", "U_gas", "T_gas"]
+    scales,
+    field_dict,
+    features=[
+        "rho_gas",
+        "fscalar_gas",
+        "vel_disp_gas",
+        "vel_div_gas",
+        "tidal_eigval_gas_0",
+        "P_gas",
+        "U_gas",
+        "T_gas",
+    ],
 ):
     nrows = len(scales)
     ncols = len(features)

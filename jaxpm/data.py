@@ -8,7 +8,7 @@ from jaxpm.kernels import fftk, invnabla_kernel, invlaplace_kernel, gradient_ker
 
 def get_offline_regression_data(
     snapshot_dict,
-    x_labels=["rho", "fscalar", "vel_disp", "vel_div"],
+    x_labels=["rho", "fscalar", "vel_disp", "vel_div", "tidal_eigval"],
     y_labels=["P", "U", "T"],
     include_scale=True,
     include_latent=False,
@@ -25,7 +25,7 @@ def get_offline_regression_data(
         if x_label in ["rho", "vel_disp"]:
             X_particle.append(jnp.log10(particle_features[f"gas_{x_label}"] + eps))
             X_field.append(jnp.log10(field_features[f"{x_label}_gas"] + eps))
-        elif x_label in ["fscalar", "vel_div"]:
+        elif x_label in ["fscalar", "vel_div"] or "tidal_eigval" in x_label:
             X_particle.append(jnp.arcsinh(particle_features[f"gas_{x_label}"]))
             X_field.append(jnp.arcsinh(field_features[f"{x_label}_gas"]))
         else:
