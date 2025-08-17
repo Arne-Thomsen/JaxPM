@@ -152,3 +152,11 @@ def PGD_kernel(kvec, kl, ks):
     imask = (~(kk == 0)).astype(int)
     v *= imask
     return v
+
+
+def gaussian_kernel(kvec, k_smooth):
+    """
+    Computes a gaussian kernel
+    """
+    kk = sum(ki**2 for ki in kvec)
+    return jnp.exp(-0.5 * kk / k_smooth**2)

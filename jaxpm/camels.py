@@ -353,7 +353,7 @@ def _subsample_ordered_particles_in_boxes(particles, in_particles=256, out_parti
     return np.squeeze(particles)
 
 
-def preprocess_snapshots(snapshot_dict):
+def preprocess_snapshots(snapshot_dict, compute_tidal_tensor=False):
     mesh_shape = [snapshot_dict["mesh_per_dim"]] * 3
 
     # vmap over the snapshots
@@ -400,34 +400,34 @@ def preprocess_snapshots(snapshot_dict):
     gas_vel_div = jnp.sum(gas_vel_div, axis=-1)
     vel_div_gas = vcic_paint(jnp.zeros(mesh_shape), gas_pos, gas_vel_div / gas_N)
 
-    # tidal field
-    kvec = fftk(mesh_shape, symmetric=False)
-    kk = jnp.sqrt(sum((ki / jnp.pi) ** 2 for ki in kvec))
-    kk = jnp.where(kk == 0, 1.0, kk)
-    kk = kk[jnp.newaxis]
+    if compute_tidal_tensor:
+        kvec = fftk(mesh_shape, symmetric=False)
+        kk = jnp.sqrt(sum((ki / jnp.pi) ** 2 for ki in kvec))
+        kk = jnp.where(kk == 0, 1.0, kk)
+        kk = kk[jnp.newaxis]
 
-    delta_k = jnp.fft.fftn(rho_gas, axes=(1, 2, 3))
+        delta_k = jnp.fft.fftn(rho_gas, axes=(1, 2, 3))
 
-    # compute the tidal field at the position of each particle
-    T_xx = vcic_read(jnp.fft.ifftn(-(kvec[0] ** 2) * delta_k / kk, axes=(1, 2, 3)).real, gas_pos)
-    T_yy = vcic_read(jnp.fft.ifftn(-(kvec[1] ** 2) * delta_k / kk, axes=(1, 2, 3)).real, gas_pos)
-    T_zz = vcic_read(jnp.fft.ifftn(-(kvec[2] ** 2) * delta_k / kk, axes=(1, 2, 3)).real, gas_pos)
-    T_xy = vcic_read(jnp.fft.ifftn(-(kvec[0] * kvec[1]) * delta_k / kk, axes=(1, 2, 3)).real, gas_pos)
-    T_xz = vcic_read(jnp.fft.ifftn(-(kvec[0] * kvec[2]) * delta_k / kk, axes=(1, 2, 3)).real, gas_pos)
-    T_yz = vcic_read(jnp.fft.ifftn(-(kvec[1] * kvec[2]) * delta_k / kk, axes=(1, 2, 3)).real, gas_pos)
+        # compute the tidal field at the position of each particle
+        T_xx = vcic_read(jnp.fft.ifftn(-(kvec[0] ** 2) * delta_k / kk, axes=(1, 2, 3)).real, gas_pos)
+        T_yy = vcic_read(jnp.fft.ifftn(-(kvec[1] ** 2) * delta_k / kk, axes=(1, 2, 3)).real, gas_pos)
+        T_zz = vcic_read(jnp.fft.ifftn(-(kvec[2] ** 2) * delta_k / kk, axes=(1, 2, 3)).real, gas_pos)
+        T_xy = vcic_read(jnp.fft.ifftn(-(kvec[0] * kvec[1]) * delta_k / kk, axes=(1, 2, 3)).real, gas_pos)
+        T_xz = vcic_read(jnp.fft.ifftn(-(kvec[0] * kvec[2]) * delta_k / kk, axes=(1, 2, 3)).real, gas_pos)
+        T_yz = vcic_read(jnp.fft.ifftn(-(kvec[1] * kvec[2]) * delta_k / kk, axes=(1, 2, 3)).real, gas_pos)
 
-    T = jnp.stack(
-        [
-            jnp.stack([T_xx, T_xy, T_xz], axis=-1),
-            jnp.stack([T_xy, T_yy, T_yz], axis=-1),
-            jnp.stack([T_xz, T_yz, T_zz], axis=-1),
-        ],
-        axis=-2,
-    )
+        T = jnp.stack(
+            [
+                jnp.stack([T_xx, T_xy, T_xz], axis=-1),
+                jnp.stack([T_xy, T_yy, T_yz], axis=-1),
+                jnp.stack([T_xz, T_yz, T_zz], axis=-1),
+            ],
+            axis=-2,
+        )
 
-    # symmetric, so eigh is fine
-    gas_tidal_eigval, gas_tidal_eigvec = jnp.linalg.eigh(T)
-    gas_tidal_eigvec = gas_tidal_eigvec.reshape(gas_tidal_eigvec.shape[0], gas_tidal_eigvec.shape[1], -1)
+        # symmetric, so eigh is fine
+        gas_tidal_eigval, gas_tidal_eigvec = jnp.linalg.eigh(T)
+        gas_tidal_eigvec = gas_tidal_eigvec.reshape(gas_tidal_eigvec.shape[0], gas_tidal_eigvec.shape[1], -1)
 
     # output
     particle_features = {}
@@ -436,10 +436,11 @@ def preprocess_snapshots(snapshot_dict):
     particle_features["gas_fscalar"] = gas_fscalar
     particle_features["gas_vel_disp"] = gas_vel_disp
     particle_features["gas_vel_div"] = gas_vel_div
-    for i in range(gas_tidal_eigval.shape[-1]):
-        particle_features[f"gas_tidal_eigval_{i}"] = gas_tidal_eigval[..., i]
-    for i in range(gas_tidal_eigvec.shape[-1]):
-        particle_features[f"gas_tidal_eigvec_{i}"] = gas_tidal_eigvec[..., i]
+    if compute_tidal_tensor:
+        for i in range(gas_tidal_eigval.shape[-1]):
+            particle_features[f"gas_tidal_eigval_{i}"] = gas_tidal_eigval[..., i]
+        for i in range(gas_tidal_eigvec.shape[-1]):
+            particle_features[f"gas_tidal_eigvec_{i}"] = gas_tidal_eigvec[..., i]
 
     particle_features["gas_P"] = snapshot_dict["gas_Ps"]
     particle_features["gas_U"] = snapshot_dict["gas_Us"]
@@ -450,10 +451,11 @@ def preprocess_snapshots(snapshot_dict):
     field_features["fscalar_gas"] = fscalar_gas
     field_features["vel_disp_gas"] = vel_disp_gas
     field_features["vel_div_gas"] = vel_div_gas
-    for i in range(gas_tidal_eigval.shape[-1]):
-        field_features[f"tidal_eigval_{i}_gas"] = vcic_paint(
-            jnp.zeros(mesh_shape), gas_pos, gas_tidal_eigval[..., i] / gas_N
-        )
+    if compute_tidal_tensor:
+        for i in range(gas_tidal_eigval.shape[-1]):
+            field_features[f"tidal_eigval_{i}_gas"] = vcic_paint(
+                jnp.zeros(mesh_shape), gas_pos, gas_tidal_eigval[..., i] / gas_N
+            )
 
     field_features["P_gas"] = vcic_paint(jnp.zeros(mesh_shape), gas_pos, snapshot_dict["gas_Ps"] / gas_N)
     field_features["U_gas"] = vcic_paint(jnp.zeros(mesh_shape), gas_pos, snapshot_dict["gas_Us"] / gas_N)

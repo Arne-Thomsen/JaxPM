@@ -13,9 +13,9 @@ def run_simulations(
     mesh_per_dim,
     gravity_model=None,
     pressure_model=None,
-    gas_architecture=None,
+    i_init=0,
+    i_plot=None,
     dt0=0.01,
-    i_snapshots=None,
     plot_dm=False,
     plot_gas=True,
     plot_latent=False,
@@ -31,29 +31,35 @@ def run_simulations(
     gas_poss = camels_dict["gas_poss"]
     gas_vels = camels_dict["gas_vels"]
 
-    if i_snapshots is not None:
-        scales = scales[i_snapshots]
-        dm_poss = dm_poss[i_snapshots]
-        dm_vels = dm_vels[i_snapshots]
-        gas_poss = gas_poss[i_snapshots]
-        gas_vels = gas_vels[i_snapshots]
+    if i_plot is None:
+        i_plot = jnp.arange(scales.shape[0])
 
     if plot_latent:
         latent_init = jnp.ones((dm_poss.shape[1], 1))
-        y0 = (dm_poss[0], dm_vels[0], gas_poss[0], gas_vels[0], latent_init)
+        y0 = (dm_poss[i_init], dm_vels[i_init], gas_poss[i_init], gas_vels[i_init], latent_init)
     else:
-        y0 = (dm_poss[0], dm_vels[0], gas_poss[0], gas_vels[0])
+        y0 = (dm_poss[i_init], dm_vels[i_init], gas_poss[i_init], gas_vels[i_init])
+
+    t0 = scales[i_init]
+    t1 = scales[i_plot[-1]]
+    ts = scales[i_plot]
+
+    scales = scales[i_plot]
+    dm_poss = dm_poss[i_plot]
+    dm_vels = dm_vels[i_plot]
+    gas_poss = gas_poss[i_plot]
+    gas_vels = gas_vels[i_plot]
 
     og_ode = hpm.get_hpm_network_ode_fn(mesh_per_dim, cosmo)
     og_res = diffeqsolve(
         terms=ODETerm(og_ode),
         solver=LeapfrogMidpoint(),
-        t0=scales[0],
-        t1=scales[-1],
+        t0=t0,
+        t1=t1,
         dt0=dt0,
         y0=y0,
-        saveat=SaveAt(ts=scales),
-        max_steps=100,
+        saveat=SaveAt(ts=ts),
+        max_steps=1000,
         stepsize_controller=ConstantStepSize(),
     )
     og_dm_poss, og_dm_vels, og_gas_poss, og_gas_vels = og_res.ys[:4]
@@ -65,17 +71,16 @@ def run_simulations(
         cosmo,
         gravity_model=gravity_model,
         pressure_model=pressure_model,
-        gas_architecture=gas_architecture,
     )
     nn_res = diffeqsolve(
         terms=ODETerm(nn_ode),
         solver=LeapfrogMidpoint(),
-        t0=scales[0],
-        t1=scales[-1],
+        t0=t0,
+        t1=t1,
         dt0=dt0,
         y0=y0,
-        saveat=SaveAt(ts=scales),
-        max_steps=100,
+        saveat=SaveAt(ts=ts),
+        max_steps=1000,
         stepsize_controller=ConstantStepSize(),
     )
     nn_dm_poss, nn_dm_vels, nn_gas_poss, nn_gas_vels = nn_res.ys[:4]

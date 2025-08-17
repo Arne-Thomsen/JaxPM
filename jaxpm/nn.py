@@ -146,6 +146,10 @@ class MLP(nnx.Module):
         self.dropout_rate = dropout_rate
         self.norm_type = norm_type
 
+        # TODO
+        # self.k_smooth = nnx.Param(jnp.array(1.0))
+        self.k_model = NeuralSplineFourierFilterNNX(n_knots=8, d_latent=16, rngs=rngs)
+
         if isinstance(self.activation, str):
             if self.activation == "relu":
                 self.activation = jax.nn.relu
