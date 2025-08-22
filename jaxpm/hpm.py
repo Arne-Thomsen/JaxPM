@@ -174,6 +174,12 @@ def hpm_forces(
         # field-level network output
         else:
             if pressure_architecture == "cnn":
+
+                if gas_latent is not None:
+                    latent_gas = gas_latent
+                else:
+                    latent_gas = None
+
                 _, field_inputs = get_hpm_inputs(
                     scale,
                     gas_pos,
@@ -182,7 +188,7 @@ def hpm_forces(
                     rho_gas,
                     gas_N,
                     mesh_shape,
-                    latent_gas=gas_latent,
+                    latent_gas=latent_gas,
                     return_field=True,
                 )
                 preds_gas = pressure_model(field_inputs, jnp.atleast_1d(scale), training=training)

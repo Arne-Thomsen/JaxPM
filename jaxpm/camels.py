@@ -26,6 +26,9 @@ def load_CV_snapshots(
     NOTE for training of the HPM-"table" network, the gas particles don't actually need to exist in all snapshots
     """
 
+    if isinstance(i_snapshots, int):
+        i_snapshots = [i_snapshots]
+
     # see https://camels.readthedocs.io/en/latest/parameters.html#cosmological-parameters
     cosmo = jc.Planck15(
         Omega_c=0.3 - 0.049,
@@ -482,7 +485,11 @@ def _h5_to_dict(FILE):
     snapshot_dict = {}
     with h5py.File(FILE, "r") as f:
         for key in f.keys():
-            snapshot_dict[key] = f[key][:]
+            try:
+                snapshot_dict[key] = f[key][:]
+            # relevant when there's only a single index
+            except ValueError:
+                snapshot_dict[key] = f[key][()]
 
     print(f"Loaded {FILE}")
     return snapshot_dict

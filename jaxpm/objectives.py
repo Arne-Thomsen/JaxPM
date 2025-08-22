@@ -66,8 +66,7 @@ def two_point_loss(
         cls_loss = jnp.sum(cls_loss, axis=-1)
         if w_snapshot > 0.0:
             cls_loss *= w_snapshot
-        if not debug:
-            cls_loss = jnp.mean(cls_loss)
+        cls_loss = jnp.mean(cls_loss)
 
         if debug:
             print(f"cls_loss = {w_cls * cls_loss}")
@@ -115,8 +114,9 @@ class ParticleLoss:
         w_cls: float = 0.0,
         w_cross: float = 0.0,
         w_snapshot: float = 0.0,
-        cutoff_quantile: float = 0.95,
+        cutoff_quantile: float = None,
         weight_k: bool = True,
+        huber: bool = True,
         eps: float = 1e-8,
     ) -> None:
         if w_cross > 0.0 and w_cls == 0.0:
@@ -129,18 +129,19 @@ class ParticleLoss:
         self.w_snapshot = w_snapshot
         self.cutoff_quantile = cutoff_quantile
         self.weight_k = weight_k
+        self.huber = huber
         self.eps = eps
 
     def __call__(
         self,
         res_poss: jnp.ndarray,
-        res_vels: jnp.ndarray,
+        res_vels: jnp.ndarray = None,
         ref_poss: Optional[jnp.ndarray] = None,
         ref_vels: Optional[jnp.ndarray] = None,
         ref_cls: Optional[jnp.ndarray] = None,
         ref_deltas: Optional[jnp.ndarray] = None,
-        snapshot_mean=True,
-        particle_mean=True,
+        snapshot_mean: bool = True,
+        particle_mean: bool = True,
         debug: bool = False,
     ):
 
@@ -153,8 +154,18 @@ class ParticleLoss:
             print(f"w_pos = {self.w_pos}")
 
             dist = ((res_poss - ref_poss + self.mesh_per_dim // 2) % self.mesh_per_dim) - self.mesh_per_dim // 2
-            pos_loss = jnp.sum(dist**2, axis=-1)
-            pos_loss = jnp.where(pos_loss < jnp.quantile(pos_loss, self.cutoff_quantile), pos_loss, 0.0)
+
+            if self.huber:
+                # Huber loss: 0.5 * x^2 if |x| <= delta, delta * (|x| - 0.5 * delta) otherwise
+                delta = 1.0
+                abs_dist = jnp.abs(dist)
+                huber_per_dim = jnp.where(abs_dist <= delta, 0.5 * dist**2, delta * (abs_dist - 0.5 * delta))
+                pos_loss = jnp.sum(huber_per_dim, axis=-1)
+            else:
+                pos_loss = jnp.sum(dist**2, axis=-1)
+
+            if self.cutoff_quantile is not None:
+                pos_loss = jnp.where(pos_loss < jnp.quantile(pos_loss, self.cutoff_quantile), pos_loss, 0.0)
             if self.w_snapshot > 0.0:
                 pos_loss *= self.w_snapshot
 
@@ -175,14 +186,15 @@ class ParticleLoss:
             print(f"w_vel = {self.w_vel}")
 
             vel_loss = jnp.sum((res_vels - ref_vels) ** 2, axis=-1)
-            vel_loss = jnp.where(vel_loss < jnp.quantile(vel_loss, self.cutoff_quantile), vel_loss, 0.0)
+            if self.cutoff_quantile is not None:
+                vel_loss = jnp.where(vel_loss < jnp.quantile(vel_loss, self.cutoff_quantile), vel_loss, 0.0)
             if self.w_snapshot > 0.0:
                 vel_loss *= self.w_snapshot
 
-            if particle_mean:
-                vel_loss = jnp.mean(vel_loss, axis=-1)
             if snapshot_mean:
                 vel_loss = jnp.mean(vel_loss, axis=0)
+            if particle_mean:
+                vel_loss = jnp.mean(vel_loss)
 
             if debug:
                 print(f"vel_loss = {self.w_vel * vel_loss}")
@@ -224,6 +236,7 @@ class FieldLoss:
         w_cross: float = 0.0,
         w_snapshot: float = 0.0,
         weight_k: bool = True,
+        use_arcsinh=False,
         eps: float = 1e-8,
     ) -> None:
         if w_cross > 0.0 and w_cls == 0.0:
@@ -234,6 +247,8 @@ class FieldLoss:
         self.w_cls = w_cls
         self.w_cross = w_cross
         self.w_snapshot = w_snapshot
+        self.use_arcsinh = use_arcsinh
+        self.weight_k = weight_k
         self.eps = eps
 
     def __call__(
@@ -244,6 +259,8 @@ class FieldLoss:
         ref_vels: Optional[jnp.ndarray] = None,
         ref_cls: Optional[jnp.ndarray] = None,
         ref_deltas: Optional[jnp.ndarray] = None,
+        snapshot_mean: bool = True,
+        field_mean: bool = True,
         debug: bool = False,
     ):
         print("using field loss")
@@ -256,10 +273,19 @@ class FieldLoss:
             res_rhos = vcic_paint(jnp.zeros([self.mesh_per_dim] * 3), res_poss, 1)
             res_deltas = res_rhos / res_rhos.mean() - 1
 
-            field_loss = (res_deltas - ref_deltas) ** 2
+            if self.use_arcsinh:
+                field_loss = (jnp.arcsinh(res_deltas) - jnp.arcsinh(ref_deltas)) ** 2
+            else:
+                field_loss = (res_deltas - ref_deltas) ** 2
+
             field_loss = jnp.where(field_loss < jnp.quantile(field_loss, 0.95), field_loss, 0.0)
+
+            if snapshot_mean:
+                field_loss = jnp.mean(field_loss, axis=0)
+            if field_mean:
+                field_loss = jnp.mean(field_loss)
+
             # rho_loss /= jnp.maximum(scales.reshape(-1,1,1,1)**2, eps)
-            field_loss = jnp.mean(field_loss)
 
             if debug:
                 print(f"field_loss = {self.w_field * field_loss}")
@@ -277,7 +303,7 @@ class FieldLoss:
                 self.w_cross,
                 self.w_snapshot,
                 self.eps,
-                weight_k,
+                self.weight_k,
                 debug,
             )
 

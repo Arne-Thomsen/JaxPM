@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import diffrax
 from diffrax import diffeqsolve, ODETerm, LeapfrogMidpoint, PIDController, SaveAt, ConstantStepSize
 
-from jaxpm import hpm, plotting
+from jaxpm import hpm, plotting, nn
 from jaxpm.painting import cic_paint, cic_read
 
 
@@ -13,6 +13,7 @@ def run_simulations(
     mesh_per_dim,
     gravity_model=None,
     pressure_model=None,
+    with_latent=False,
     i_init=0,
     i_plot=None,
     dt0=0.01,
@@ -34,8 +35,11 @@ def run_simulations(
     if i_plot is None:
         i_plot = jnp.arange(scales.shape[0])
 
-    if plot_latent:
-        latent_init = jnp.ones((dm_poss.shape[1], 1))
+    if with_latent:
+        if isinstance(pressure_model, nn.MLP):
+            latent_init = jnp.ones((dm_poss.shape[1], 1))
+        elif isinstance(pressure_model, nn.ScaleConditionedCNN):
+            latent_init = jnp.ones(mesh_shape + [1])
         y0 = (dm_poss[i_init], dm_vels[i_init], gas_poss[i_init], gas_vels[i_init], latent_init)
     else:
         y0 = (dm_poss[i_init], dm_vels[i_init], gas_poss[i_init], gas_vels[i_init])
@@ -63,7 +67,7 @@ def run_simulations(
         stepsize_controller=ConstantStepSize(),
     )
     og_dm_poss, og_dm_vels, og_gas_poss, og_gas_vels = og_res.ys[:4]
-    if plot_latent:
+    if with_latent:
         og_latents = og_res.ys[4]
 
     nn_ode = hpm.get_hpm_network_ode_fn(
@@ -84,20 +88,25 @@ def run_simulations(
         stepsize_controller=ConstantStepSize(),
     )
     nn_dm_poss, nn_dm_vels, nn_gas_poss, nn_gas_vels = nn_res.ys[:4]
-    if plot_latent:
+    if with_latent:
         nn_gas_latents = nn_res.ys[4]
 
     if plot_latent:
         n_latent = nn_gas_latents.shape[-1]
 
-        nn_N_gas = jax.vmap(cic_paint, in_axes=(None, 0))(jnp.zeros(mesh_shape), nn_gas_poss)
-        nn_gas_N = jax.vmap(cic_read, in_axes=(0, 0))(nn_N_gas, nn_gas_poss)
-        nn_gas_latents_norm = jnp.where(
-            nn_gas_N[..., jnp.newaxis] != 0, nn_gas_latents / nn_gas_N[..., jnp.newaxis], nn_gas_latents
-        )
+        if isinstance(pressure_model, nn.ScaleConditionedCNN):
+            weights = jnp.transpose(nn_gas_latents, (4, 1, 2, 3, 0))
 
-        # (n_latent, n_scales, n_parts)
-        weights = jnp.transpose(nn_gas_latents_norm, (2, 0, 1))
+        elif isinstance(pressure_model, nn.MLP):
+
+            nn_N_gas = jax.vmap(cic_paint, in_axes=(None, 0))(jnp.zeros(mesh_shape), nn_gas_poss)
+            nn_gas_N = jax.vmap(cic_read, in_axes=(0, 0))(nn_N_gas, nn_gas_poss)
+            nn_gas_latents_norm = jnp.where(
+                nn_gas_N[..., jnp.newaxis] != 0, nn_gas_latents / nn_gas_N[..., jnp.newaxis], nn_gas_latents
+            )
+
+            # (n_latent, n_scales, n_parts)
+            weights = jnp.transpose(nn_gas_latents_norm, (2, 0, 1))
 
     with jax.default_device(jax.devices("cpu")[0]):
         if plot_dm:
@@ -123,14 +132,27 @@ def run_simulations(
             )
 
         if plot_latent:
-            plotting.compare_particle_evolution(
-                mesh_shape,
-                scales,
-                jnp.stack([nn_gas_poss for _ in range(n_latent + 1)], axis=0),
-                title="latent",
-                weights=jnp.concatenate([jnp.ones((1, nn_gas_poss.shape[0], nn_gas_poss.shape[1])), weights], axis=0),
-                col_titles=["gas_pos"] + [f"latent {i}" for i in range(n_latent)],
-                shared_colorbar=True,
-                log=False,
-                arcsinh=True,
-            )
+            if isinstance(pressure_model, nn.ScaleConditionedCNN):
+                plotting.compare_field_evolution(
+                    scales,
+                    nn_gas_latents,
+                    # values
+                    log=True,
+                    # cosmetics
+                    title="latent",
+                )
+
+            elif isinstance(pressure_model, nn.MLP):
+                plotting.compare_particle_evolution(
+                    mesh_shape,
+                    scales,
+                    jnp.stack([nn_gas_poss for _ in range(n_latent + 1)], axis=0),
+                    title="latent",
+                    weights=jnp.concatenate(
+                        [jnp.ones((1, nn_gas_poss.shape[0], nn_gas_poss.shape[1])), weights], axis=0
+                    ),
+                    col_titles=["gas_pos"] + [f"latent {i}" for i in range(n_latent)],
+                    shared_colorbar=True,
+                    log=False,
+                    arcsinh=True,
+                )

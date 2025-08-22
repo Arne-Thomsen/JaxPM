@@ -413,7 +413,6 @@ def plot_gas_features(
         "fscalar_gas",
         "vel_disp_gas",
         "vel_div_gas",
-        "tidal_eigval_gas_0",
         "P_gas",
         "U_gas",
         "T_gas",

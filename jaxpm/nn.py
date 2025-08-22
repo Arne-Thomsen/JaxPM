@@ -138,6 +138,7 @@ class MLP(nnx.Module):
         dropout_rate: float = 0.0,
         activation=jax.nn.relu,
         norm_type: str = "layer",
+        k_filter: str = None,
     ):
         self.linear_in = nnx.Linear(d_in, d_hidden, rngs=rngs)
         self.linear_hid = [nnx.Linear(d_hidden, d_hidden, rngs=rngs) for _ in range(n_hidden)]
@@ -146,9 +147,12 @@ class MLP(nnx.Module):
         self.dropout_rate = dropout_rate
         self.norm_type = norm_type
 
-        # TODO
-        # self.k_smooth = nnx.Param(jnp.array(1.0))
-        self.k_model = NeuralSplineFourierFilterNNX(n_knots=8, d_latent=16, rngs=rngs)
+        if k_filter == "gaussian":
+            self.k_smooth = nnx.Param(jnp.array(1.0))
+        elif k_filter == "spline":
+            self.k_model = NeuralSplineFourierFilterNNX(n_knots=8, d_latent=16, rngs=rngs)
+        elif k_filter is not None:
+            raise ValueError(f"Unsupported k_filter: {k_filter}")
 
         if isinstance(self.activation, str):
             if self.activation == "relu":
@@ -298,15 +302,15 @@ class ResidualMLP(nnx.Module):
 class ScaleConditionedCNN(nnx.Module):
     def __init__(
         self,
-        d_in,
-        d_hidden,
-        d_out,
-        n_hidden,
-        kernel_size,
-        rngs,
+        d_in=4,
+        d_hidden=64,
+        d_out=1,
+        n_hidden=4,
+        kernel_size=(3, 3, 3),
         activation=jax.nn.swish,
-        use_residual=False,
+        use_residual=True,
         norm_type="layer",
+        rngs=nnx.Rngs(0),
     ):
         self.activation = activation
         self.use_residual = use_residual
@@ -322,7 +326,6 @@ class ScaleConditionedCNN(nnx.Module):
         if self.norm_type == "layer":
             self.norm_in = nnx.LayerNorm(d_hidden, rngs=rngs)
             self.norm_hidden = [nnx.LayerNorm(d_hidden, rngs=rngs) for _ in range(n_hidden)]
-            self.norm_out = nnx.LayerNorm(d_out, rngs=rngs)
 
         # scale conditioning https://arxiv.org/abs/1709.07871
         self.scale_embed = nnx.Linear(1, d_hidden, rngs=rngs)
