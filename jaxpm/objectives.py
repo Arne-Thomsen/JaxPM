@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 from typing import Optional
 
+from jaxpm import data
 from jaxpm.painting import cic_paint, cic_read, compensate_cic
 from jaxpm.utils import power_spectrum, cross_correlation_coefficients
 
@@ -114,6 +115,7 @@ class ParticleLoss:
         w_cls: float = 0.0,
         w_cross: float = 0.0,
         w_snapshot: float = 0.0,
+        w_P=0.0,
         cutoff_quantile: float = None,
         weight_k: bool = True,
         huber: bool = True,
@@ -127,19 +129,28 @@ class ParticleLoss:
         self.w_cls = w_cls
         self.w_cross = w_cross
         self.w_snapshot = w_snapshot
+        self.w_P = w_P
         self.cutoff_quantile = cutoff_quantile
         self.weight_k = weight_k
         self.huber = huber
         self.eps = eps
 
+    def _huber_loss(self, dist, delta=1.0):
+        # Huber loss: 0.5 * x^2 if |x| <= delta, delta * (|x| - 0.5 * delta) otherwise
+        abs_dist = jnp.abs(dist)
+        huber_per_dim = jnp.where(abs_dist <= delta, 0.5 * dist**2, delta * (abs_dist - 0.5 * delta))
+        return huber_per_dim
+
     def __call__(
         self,
-        res_poss: jnp.ndarray,
+        res_poss: jnp.ndarray = None,
         res_vels: jnp.ndarray = None,
+        res_Ps: Optional[jnp.ndarray] = None,
         ref_poss: Optional[jnp.ndarray] = None,
         ref_vels: Optional[jnp.ndarray] = None,
         ref_cls: Optional[jnp.ndarray] = None,
         ref_deltas: Optional[jnp.ndarray] = None,
+        ref_Ps: Optional[jnp.ndarray] = None,
         snapshot_mean: bool = True,
         particle_mean: bool = True,
         debug: bool = False,
@@ -151,18 +162,16 @@ class ParticleLoss:
 
         # position
         if self.w_pos > 0.0:
+            assert res_poss is not None and ref_poss is not None
             print(f"w_pos = {self.w_pos}")
 
             dist = ((res_poss - ref_poss + self.mesh_per_dim // 2) % self.mesh_per_dim) - self.mesh_per_dim // 2
 
             if self.huber:
-                # Huber loss: 0.5 * x^2 if |x| <= delta, delta * (|x| - 0.5 * delta) otherwise
-                delta = 1.0
-                abs_dist = jnp.abs(dist)
-                huber_per_dim = jnp.where(abs_dist <= delta, 0.5 * dist**2, delta * (abs_dist - 0.5 * delta))
-                pos_loss = jnp.sum(huber_per_dim, axis=-1)
+                pos_loss = self._huber_loss(dist)
             else:
-                pos_loss = jnp.sum(dist**2, axis=-1)
+                pos_loss = dist**2
+            pos_loss = jnp.sum(pos_loss, axis=-1)
 
             if self.cutoff_quantile is not None:
                 pos_loss = jnp.where(pos_loss < jnp.quantile(pos_loss, self.cutoff_quantile), pos_loss, 0.0)
@@ -174,8 +183,6 @@ class ParticleLoss:
             if snapshot_mean:
                 pos_loss = jnp.mean(pos_loss, axis=0)
 
-            # pos_loss = jnp.mean(pos_loss)
-
             if debug:
                 print(f"pos_loss = {self.w_pos * pos_loss}")
 
@@ -183,18 +190,24 @@ class ParticleLoss:
 
         # velocity
         if self.w_vel > 0.0:
+            assert res_vels is not None and ref_vels is not None
             print(f"w_vel = {self.w_vel}")
 
-            vel_loss = jnp.sum((res_vels - ref_vels) ** 2, axis=-1)
+            if self.huber:
+                vel_loss = self._huber_loss(res_vels - ref_vels)
+            else:
+                vel_loss = (res_vels - ref_vels) ** 2
+            vel_loss = jnp.sum(vel_loss, axis=-1)
+
             if self.cutoff_quantile is not None:
                 vel_loss = jnp.where(vel_loss < jnp.quantile(vel_loss, self.cutoff_quantile), vel_loss, 0.0)
             if self.w_snapshot > 0.0:
                 vel_loss *= self.w_snapshot
 
+            if particle_mean:
+                vel_loss = jnp.mean(vel_loss, axis=-1)
             if snapshot_mean:
                 vel_loss = jnp.mean(vel_loss, axis=0)
-            if particle_mean:
-                vel_loss = jnp.mean(vel_loss)
 
             if debug:
                 print(f"vel_loss = {self.w_vel * vel_loss}")
@@ -203,6 +216,7 @@ class ParticleLoss:
 
         # two-point
         if self.w_cls > 0.0 or self.w_cross > 0.0:
+            assert ref_deltas is not None
             loss += two_point_loss(
                 self.mesh_per_dim,
                 res_poss,
@@ -215,6 +229,19 @@ class ParticleLoss:
                 self.weight_k,
                 debug,
             )
+
+        # pressure
+        if self.w_P > 0.0:
+            assert res_Ps is not None and ref_Ps is not None
+            print(f"w_P = {self.w_P}")
+            res_Ps = (res_Ps - jnp.mean(res_Ps)) / (jnp.std(res_Ps) + self.eps)
+            ref_Ps = (ref_Ps - jnp.mean(ref_Ps)) / (jnp.std(ref_Ps) + self.eps)
+            P_loss = jnp.mean((res_Ps - ref_Ps) ** 2)
+
+            if debug:
+                print(f"P_loss = {self.w_P * P_loss}")
+
+            loss += self.w_P * P_loss
 
         return loss
 

@@ -71,9 +71,6 @@ def hpm_forces(
         )
 
     if with_gas:
-        # TODO
-        # dm_force = -gravity(dm_pos) * cosmo.Omega_c / (cosmo.Omega_c + cosmo.Omega_b)
-        # gas_force = -gravity(gas_pos) * cosmo.Omega_b / (cosmo.Omega_c + cosmo.Omega_b)
         dm_force = -gravity(dm_pos)
         gas_force = -gravity(gas_pos)
     else:
@@ -158,16 +155,12 @@ def hpm_forces(
 
             if gas_latent is None:
                 print("No latent variable")
-                gas_P = 10 ** jnp.squeeze(gas_preds)
-
-                # gas_U = 10 ** jnp.squeeze(gas_preds)
-                # gas_P = 2 / 3 * gas_U * gas_rho
+                gas_U = 10 ** jnp.squeeze(gas_preds)
+                gas_P = 2 / 3 * gas_U * gas_rho
             else:
                 print(f"With latent variable")
-                gas_P, d_gas_latent = 10 ** gas_preds[:, 0], gas_preds[:, 1:]
-
-                # gas_U, d_gas_latent = 10 ** gas_preds[:, 0], gas_preds[:, 1:]
-                # gas_P = 2 / 3 * gas_U * gas_rho
+                gas_U, d_gas_latent = 10 ** gas_preds[:, 0], gas_preds[:, 1:]
+                gas_P = 2 / 3 * gas_U * gas_rho
 
             P_gas = cic_paint(jnp.zeros(mesh_shape), gas_pos, weight=gas_P / gas_N)
 
@@ -197,10 +190,12 @@ def hpm_forces(
 
             if gas_latent is None:
                 print("No latent variable")
-                P_gas = 10 ** jnp.squeeze(preds_gas)
+                U_gas = 10 ** jnp.squeeze(preds_gas)
+                P_gas = 2 / 3 * U_gas * rho_gas
             else:
                 print(f"With latent variable")
-                P_gas, d_gas_latent = 10 ** preds_gas[..., 0], preds_gas[..., 1:]
+                U_gas, d_gas_latent = 10 ** preds_gas[..., 0], preds_gas[..., 1:]
+                P_gas = 2 / 3 * U_gas * rho_gas
 
         # d_gas_latent -= jnp.mean(d_gas_latent)
         P_gas_k = jnp.fft.rfftn(P_gas)
@@ -218,7 +213,7 @@ def hpm_forces(
                 [cic_read(jnp.fft.irfftn(gradient_kernel(kvec, i) * P_gas_k), pos) for i in range(len(kvec))],
                 axis=-1,
             )
-            return nabla_P / jnp.expand_dims(gas_rho, axis=-1)
+            return nabla_P / jnp.maximum(jnp.expand_dims(gas_rho, axis=-1), 1e-3)
 
         gas_force -= pressure(gas_pos)
 
@@ -283,17 +278,14 @@ def get_hpm_network_ode_fn(
             d_gas_pos = drift_fac * gas_vel
             d_gas_vel = kick_fac * gas_force
 
-        # TODO
-        # # the two particle species have different masses
-        # d_dm_vel /= cosmo.Omega_c / (cosmo.Omega_c + cosmo.Omega_b)
-        # d_gas_vel /= cosmo.Omega_b / (cosmo.Omega_c + cosmo.Omega_b)
-
         if len(state) == 2:
-            return d_dm_pos, d_dm_vel
+            dy = d_dm_pos, d_dm_vel
         elif len(state) == 4:
-            return d_dm_pos, d_dm_vel, d_gas_pos, d_gas_vel
+            dy = d_dm_pos, d_dm_vel, d_gas_pos, d_gas_vel
         elif len(state) == 5:
-            return d_dm_pos, d_dm_vel, d_gas_pos, d_gas_vel, d_gas_latent
+            dy = d_dm_pos, d_dm_vel, d_gas_pos, d_gas_vel, d_gas_latent
+
+        return dy
 
     if integrator_type == "odeint":
         ode_fn = lambda state, scale, args: hpm_ode(scale, state, args)

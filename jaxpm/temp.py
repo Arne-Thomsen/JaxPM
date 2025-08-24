@@ -1,45 +1,38 @@
-def hpm_ode(scale, state, kwargs):
-    dm_pos, dm_vel, gas_pos, gas_vel = state
-
-    dm_force, gas_force, gas_latent = hpm_forces(...)
-
-    # like (3) in https://arxiv.org/pdf/2207.05509
-    dm_force *= 1.5 * cosmo.Omega_m
-    gas_force *= 1.5 * cosmo.Omega_m
-
-    # update the positions (drift)
-    pos_fac = 1.0 / (scale**3 * jnp.sqrt(jc.background.Esqr(cosmo, scale)))
-    d_dm_pos = pos_fac * dm_vel
-    d_gas_pos = pos_fac * gas_vel
-
-    # update the velocities (kick)
-    vel_fac = 1.0 / (scale**2 * jnp.sqrt(jc.background.Esqr(cosmo, scale)))
-    d_dm_vel = vel_fac * dm_force
-    d_gas_vel = vel_fac * gas_force
-
-    # the two particle species have different masses
-    d_dm_vel /= cosmo.Omega_c / (cosmo.Omega_c + cosmo.Omega_b)
-    d_gas_vel /= cosmo.Omega_b / (cosmo.Omega_c + cosmo.Omega_b)
-
-    return d_dm_pos, d_dm_vel, d_gas_pos, d_gas_vel
-
-
-rho = cic_paint(jnp.zeros(shape=mesh_shape), gas_pos)
-delta_k = jnp.fft.fftn(rho)
-
-kvec = fftk(mesh_shape, symmetric=False)
-kk = jnp.sqrt(sum((ki / jnp.pi) ** 2 for ki in kvec))
-kk = jnp.where(kk == 0, 1.0, kk)
-
-# Compute the tidal field at the position of each particle
-T_xx = cic_read(jnp.fft.ifftn(-(kvec[0] ** 2) * delta_k / kk).real, gas_pos)
-T_yy = cic_read(jnp.fft.ifftn(-(kvec[1] ** 2) * delta_k / kk).real, gas_pos)
-T_zz = cic_read(jnp.fft.ifftn(-(kvec[2] ** 2) * delta_k / kk).real, gas_pos)
-T_xy = cic_read(jnp.fft.ifftn(-(kvec[0] * kvec[1]) * delta_k / kk).real, gas_pos)
-T_xz = cic_read(jnp.fft.ifftn(-(kvec[0] * kvec[2]) * delta_k / kk).real, gas_pos)
-T_yz = cic_read(jnp.fft.ifftn(-(kvec[1] * kvec[2]) * delta_k / kk).real, gas_pos)
-
-# shape (N,3,3)
-T = jnp.stack(
-    [jnp.stack([T_xx, T_xy, T_xz], -1), jnp.stack([T_xy, T_yy, T_yz], -1), jnp.stack([T_xz, T_yz, T_zz], -1)], -2
+# Now let's compute 2pt stats
+_, pk_egd = power_spectrum(
+    compensate_cic(tot_delta_egd), boxsize=np.array([25.0] * 3), kmin=np.pi / 25.0, dk=2 * np.pi / 25.0
 )
+
+_, xpk_egd = cross_correlation_coefficients(
+    compensate_cic(tot_delta_hydro),
+    compensate_cic(tot_delta_egd),
+    boxsize=np.array([25.0] * 3),
+    kmin=np.pi / 25.0,
+    dk=2 * np.pi / 25.0,
+)
+
+fig, ax = plt.subplots(figsize=[13, 5], ncols=2)
+
+ax[0].axhline(1.0, color="black")
+ax[0].semilogx(k, (pk_dmo / pk_hydro), label="DMO")
+ax[0].semilogx(k, (pk_egd / pk_hydro), label="DMO+EGD")
+ax[0].set(
+    xlabel=r"$k$ [$h \ \mathrm{Mpc}^{-1}$]",
+    ylabel=r"$ P^{DMO}(k) \ / \ P^{Hydro}(k)$",
+    xlim=(0.1, 15),
+    ylim=(0.0, 1.5),
+)
+ax[0].grid(True)
+ax[0].legend()
+
+ax[1].axhline(1.0, color="black")
+ax[1].semilogx(k, xpk / (jnp.sqrt(pk_dmo) * jnp.sqrt(pk_hydro)), label="DMO")
+ax[1].semilogx(k, xpk_egd / (jnp.sqrt(pk_egd) * jnp.sqrt(pk_hydro)), label="DMO+EGD")
+ax[1].set(
+    xlabel=r"$k$ [$h \ \mathrm{Mpc}^{-1}$]",
+    ylabel=r"$ P_{cross}(k) \ / \sqrt{ P^{DMO}(k) \ P^{Hydro}(k)}$",
+    xlim=(0.1, 15),
+    ylim=(0.95, 1.05),
+)
+ax[1].grid()
+ax[1].legend()

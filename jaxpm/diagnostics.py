@@ -95,7 +95,7 @@ def run_simulations(
         n_latent = nn_gas_latents.shape[-1]
 
         if isinstance(pressure_model, nn.ScaleConditionedCNN):
-            weights = jnp.transpose(nn_gas_latents, (4, 1, 2, 3, 0))
+            nn_gas_latents = jnp.squeeze(nn_gas_latents)
 
         elif isinstance(pressure_model, nn.MLP):
 
@@ -135,11 +135,12 @@ def run_simulations(
             if isinstance(pressure_model, nn.ScaleConditionedCNN):
                 plotting.compare_field_evolution(
                     scales,
-                    nn_gas_latents,
+                    jnp.stack([nn_gas_latents, nn_gas_latents], axis=0),
                     # values
                     log=True,
                     # cosmetics
                     title="latent",
+                    shared_colorbar=False,
                 )
 
             elif isinstance(pressure_model, nn.MLP):
@@ -152,7 +153,8 @@ def run_simulations(
                         [jnp.ones((1, nn_gas_poss.shape[0], nn_gas_poss.shape[1])), weights], axis=0
                     ),
                     col_titles=["gas_pos"] + [f"latent {i}" for i in range(n_latent)],
-                    shared_colorbar=True,
+                    # shared_colorbar=True,
+                    shared_colorbar=False,
                     log=False,
                     arcsinh=True,
                 )
