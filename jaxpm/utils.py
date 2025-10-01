@@ -1,8 +1,9 @@
-import jax.numpy as jnp
 import numpy as np
-from jax.scipy.stats import norm
 
-__all__ = ["power_spectrum"]
+import jax.numpy as jnp
+from jax.scipy.stats import norm
+import orbax.checkpoint as ocp
+from flax import nnx
 
 
 def _initialize_pk(shape, boxsize, kmin, dk):
@@ -162,3 +163,24 @@ def refine_time_steps(t, n):
 
     # Concatenate all intervals and append the final endpoint
     return jnp.concatenate(refined_segments + [t[-1:]])
+
+
+class BaseModel(nnx.Module):
+    def __init__(self):
+        self.checkpointer = ocp.StandardCheckpointer()
+
+    def __call__(self, x, training: bool = False):
+        raise NotImplementedError("BaseModel is an abstract class and cannot be called directly.")
+
+    def load(self, checkpoint_file):
+        abstract_model = nnx.eval_shape(lambda: self)
+        graphdef, abstract_params = nnx.split(abstract_model)
+
+        params = self.checkpointer.restore(checkpoint_file, abstract_params)
+        model = nnx.merge(graphdef, params)
+        print(f"Checkpoint loaded from {checkpoint_file}")
+
+    def save(self, checkpoint_file):
+        _, params = nnx.split(self)
+        self.checkpointer.save(checkpoint_file, params, force=True)
+        print(f"Checkpoint saved to {checkpoint_file}")
