@@ -144,3 +144,21 @@ def gaussian_smoothing(im, sigma):
     filter /= filter[0, 0]
 
     return jnp.fft.ifft2(jnp.fft.fft2(im) * filter).real
+
+
+def refine_time_steps(t, n):
+    """
+    Given non-uniform time steps t, add n evenly spaced points between each consecutive pair.
+
+    Args:
+        t: 1D jax.numpy array of shape (m,)
+        n: number of points to insert between each pair
+
+    Returns:
+        jnp.ndarray of shape (m-1)*(n+1) + 1
+    """
+    # For each interval, make linspace with n+2 points, then drop the last one
+    refined_segments = [jnp.linspace(t[i], t[i + 1], n + 2)[:-1] for i in range(len(t) - 1)]
+
+    # Concatenate all intervals and append the final endpoint
+    return jnp.concatenate(refined_segments + [t[-1:]])

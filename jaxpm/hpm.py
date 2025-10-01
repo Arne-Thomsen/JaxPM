@@ -7,7 +7,7 @@ from jaxpm.kernels import fftk, gradient_kernel, invlaplace_kernel, invnabla_ker
 from jaxpm.painting import cic_paint, cic_read
 from jaxpm.graph import get_graph_given_edges, get_graph_from_features
 from jaxpm.data import get_hpm_inputs
-from jaxpm.nn import MLP, ScaleConditionedCNN
+from jaxpm.nn import MLP, ConditionedCNN
 
 
 def hpm_forces(
@@ -33,11 +33,8 @@ def hpm_forces(
     if pressure_architecture is None:
         if isinstance(pressure_model, MLP):
             pressure_architecture = "mlp"
-        elif isinstance(pressure_model, ScaleConditionedCNN):
+        elif isinstance(pressure_model, ConditionedCNN):
             pressure_architecture = "cnn"
-        else:
-            pass
-        print(f"Inferred pressure_model architecture {pressure_architecture}")
 
     N_dm = cic_paint(jnp.zeros(mesh_shape), dm_pos)
     if with_gas := gas_pos is not None:
@@ -155,12 +152,14 @@ def hpm_forces(
 
             if gas_latent is None:
                 print("No latent variable")
-                gas_U = 10 ** jnp.squeeze(gas_preds)
-                gas_P = 2 / 3 * gas_U * gas_rho
+                # gas_U = jnp.exp(jnp.squeeze(gas_preds))
+                # gas_P = gas_U * gas_rho
+                gas_P = 10 ** jnp.squeeze(gas_preds)
             else:
                 print(f"With latent variable")
-                gas_U, d_gas_latent = 10 ** gas_preds[:, 0], gas_preds[:, 1:]
-                gas_P = 2 / 3 * gas_U * gas_rho
+                # gas_U, d_gas_latent = jnp.exp(gas_preds[:, 0]), jnp.sinh(gas_preds[:, 1:])
+                gas_U, d_gas_latent = jnp.exp(gas_preds[:, 0]), gas_preds[:, 1:]
+                gas_P = gas_U * gas_rho
 
             P_gas = cic_paint(jnp.zeros(mesh_shape), gas_pos, weight=gas_P / gas_N)
 
@@ -190,14 +189,15 @@ def hpm_forces(
 
             if gas_latent is None:
                 print("No latent variable")
-                U_gas = 10 ** jnp.squeeze(preds_gas)
-                P_gas = 2 / 3 * U_gas * rho_gas
+                U_gas = jnp.exp(jnp.squeeze(preds_gas))
+                P_gas = U_gas * rho_gas
             else:
                 print(f"With latent variable")
-                U_gas, d_gas_latent = 10 ** preds_gas[..., 0], preds_gas[..., 1:]
-                P_gas = 2 / 3 * U_gas * rho_gas
+                # U_gas, d_gas_latent = jnp.exp(preds_gas[..., 0]), jnp.sinh(preds_gas[..., 1:])
+                U_gas, d_gas_latent = jnp.exp(preds_gas[..., 0]), preds_gas[..., 1:]
+                P_gas = U_gas * rho_gas
 
-        # d_gas_latent -= jnp.mean(d_gas_latent)
+        d_gas_latent -= jnp.mean(d_gas_latent)
         P_gas_k = jnp.fft.rfftn(P_gas)
 
         if hasattr(pressure_model, "k_smooth"):

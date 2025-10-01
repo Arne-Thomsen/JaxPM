@@ -17,16 +17,15 @@ def apply_egd_correction(params, dmo_dm_pos, cosmo, mesh_shape):
     egd_gas_pos = dmo_dm_pos[inds[:split]]
     egd_dm_pos = dmo_dm_pos[inds[split:]]
 
+    egd_gas_pos += egd_correction(params, dmo_delta_tot, egd_gas_pos, mesh_shape)
+
     egd_rho_dm = cic_paint(jnp.zeros(mesh_shape), egd_dm_pos)
-    egd_rho_gas = cic_paint(
-        jnp.zeros(mesh_shape), egd_gas_pos + egd_correction(params, dmo_delta_tot, egd_gas_pos, mesh_shape)
-    )
+    egd_rho_gas = cic_paint(jnp.zeros(mesh_shape), egd_gas_pos)
 
     # the Om / Ob weighting is implicit in the particle counts
     egd_rho_tot = egd_rho_dm + egd_rho_gas
-    egd_delta_tot = egd_rho_tot / egd_rho_tot.mean() - 1
 
-    return egd_rho_dm, egd_rho_gas, egd_rho_tot
+    return egd_gas_pos, egd_dm_pos, egd_rho_dm, egd_rho_gas, egd_rho_tot
 
 
 def egd_correction(params, delta, pos, mesh_shape):

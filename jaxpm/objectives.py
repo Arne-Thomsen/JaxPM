@@ -42,8 +42,9 @@ def two_point_loss(
     w_cls=1.0,
     w_cross=0.0,
     w_snapshot=0.0,
+    k_max=None,
+    k_type="step",
     eps=1e-8,
-    weight_k=True,
     debug=False,
 ):
     loss = 0.0
@@ -53,15 +54,26 @@ def two_point_loss(
 
     # power spectrum
     if w_cls > 0.0:
-        print(f"w_cls = {w_cls}")
+        print(f"w_cls = {w_cls}, k_max = {k_max}, k_type = {k_type}")
 
         kbins, res_cls = vpower_spectrum(res_deltas)
         cls_loss = (res_cls / jnp.maximum(ref_cls, eps) - 1) ** 2
 
-        if weight_k:
+        if k_max is not None:
             k = kbins[0]
-            k_min, k_cutoff = k[0], k[int(0.4 * len(k))]
-            k_weights = jnp.expand_dims(jnp.exp(-((k - k_min) ** 2) / k_cutoff), 0)
+            k_min = k[0]
+            if k_type == "step":
+                k_weights = jnp.where(k < k_max, 1.0, 0.0)
+            elif k_type == "gaussian":
+                k_weights = jnp.exp(-((k - k_min) ** 2) / k_max)
+            elif k_type == "sigmoid":
+                k_weights = 1 / (1 + jnp.exp(jnp.median(k) * (k - k_max)))
+            elif k_type == "hyperbola":
+                k_weights = 1 / jnp.sqrt(k)
+                k_weights = jnp.where(k < k_max, k_weights, 0.0)
+            else:
+                raise ValueError
+
             cls_loss *= k_weights
 
         cls_loss = jnp.sum(cls_loss, axis=-1)
@@ -81,7 +93,7 @@ def two_point_loss(
             kbins, res_cross = vcross_correlation(res_deltas, ref_deltas)
 
             cross_loss = (res_cross / jnp.sqrt(ref_cls * res_cls) - 1) ** 2
-            if weight_k:
+            if k_max is not None:
                 cross_loss *= k_weights
             cross_loss = jnp.sum(cross_loss, axis=-1)
             if w_snapshot > 0.0:
@@ -100,11 +112,27 @@ def two_point_loss(
 
 
 class ParticleLoss:
-    """Wrapper class around the functional :func:`particle_loss`.
+    """Particle-based loss function for cosmological simulations.
 
-    Designed to emulate the style of TensorFlow/Keras loss classes while reusing
-    the existing implementation. Instantiate with hyper-parameters and call
-    the instance to compute the loss.
+    Computes losses based on particle positions, velocities, pressure, and
+    two-point statistics. Supports robust loss types and periodic
+    boundary conditions for positions.
+
+    Args:
+        mesh_per_dim: Number of mesh cells per dimension
+        w_pos: Weight for position loss
+        w_vel: Weight for velocity loss
+        w_cls: Weight for power spectrum loss
+        w_cross: Weight for cross-correlation loss
+        w_snapshot: Weight for snapshot-specific losses
+        w_P: Weight for pressure loss
+        cutoff_quantile: Quantile cutoff for outlier suppression
+        weight_k: Whether to apply k-weighting in power spectrum
+        loss_type: Type of pointwise residual loss to use for positions and
+            velocities. One of {'l2', 'huber', 'geman'}.
+        robust_scale: Robustness scale parameter used by 'huber' (delta) and
+            'geman' (c). Defaults to mesh_per_dim // 16 if not provided.
+        eps: Small epsilon for numerical stability
     """
 
     def __init__(
@@ -115,14 +143,17 @@ class ParticleLoss:
         w_cls: float = 0.0,
         w_cross: float = 0.0,
         w_snapshot: float = 0.0,
-        w_P=0.0,
-        cutoff_quantile: float = None,
-        weight_k: bool = True,
-        huber: bool = True,
+        w_P: float = 0.0,
+        k_max: Optional[float] = None,
+        k_type: str = "step",
+        cutoff_quantile: Optional[float] = None,
+        loss_type: str = "huber",
+        robust_scale: Optional[float] = None,
         eps: float = 1e-8,
     ) -> None:
         if w_cross > 0.0 and w_cls == 0.0:
             raise ValueError("Cross-correlation loss requires w_cls > 0.0")
+
         self.mesh_per_dim = mesh_per_dim
         self.w_pos = w_pos
         self.w_vel = w_vel
@@ -131,20 +162,52 @@ class ParticleLoss:
         self.w_snapshot = w_snapshot
         self.w_P = w_P
         self.cutoff_quantile = cutoff_quantile
-        self.weight_k = weight_k
-        self.huber = huber
+        self.k_max = k_max
+        self.k_type = k_type
+
+        inferred = str(loss_type).lower()
+        if inferred not in {"l2", "huber", "geman"}:
+            raise ValueError(f"Unsupported loss_type '{loss_type}'. Choose from 'l2', 'huber', 'geman'.")
+        self.loss_type = inferred
+        default_scale = max(1, mesh_per_dim // 16)
+        self.robust_scale = float(robust_scale) if robust_scale is not None else float(default_scale)
         self.eps = eps
 
-    def _huber_loss(self, dist, delta=1.0):
-        # Huber loss: 0.5 * x^2 if |x| <= delta, delta * (|x| - 0.5 * delta) otherwise
-        abs_dist = jnp.abs(dist)
-        huber_per_dim = jnp.where(abs_dist <= delta, 0.5 * dist**2, delta * (abs_dist - 0.5 * delta))
-        return huber_per_dim
+    def _robust_loss(self, dist: jnp.ndarray, robust_scale=None) -> jnp.ndarray:
+        """Pointwise robust loss for residuals.
+
+        Applies the selected loss_type with self.robust_scale as the
+        characteristic scale. Returns per-component losses, caller can reduce
+        across axes as needed.
+        """
+        if robust_scale is None:
+            robust_scale = self.robust_scale
+
+        lt = self.loss_type
+        if lt == "l2":
+            return dist**2
+        if lt == "huber":
+            delta = robust_scale
+            abs_dist = jnp.abs(dist)
+            return jnp.where(abs_dist <= delta, 0.5 * dist**2, delta * (abs_dist - 0.5 * delta))
+        if lt == "geman":
+            # Geman–McClure: rho(r) = r^2 / (r^2 + c^2)
+            c2 = robust_scale**2
+            return (dist**2) / (dist**2 + c2 + self.eps)
+        # Should not happen due to validation in __init__
+        raise ValueError(f"Unknown loss_type: {lt}")
+
+    def _apply_loss_reduction(self, loss: jnp.ndarray, particle_mean: bool, snapshot_mean: bool) -> jnp.ndarray:
+        if particle_mean:
+            loss = jnp.mean(loss, axis=-1)
+        if snapshot_mean:
+            loss = jnp.mean(loss, axis=0)
+        return loss
 
     def __call__(
         self,
-        res_poss: jnp.ndarray = None,
-        res_vels: jnp.ndarray = None,
+        res_poss: Optional[jnp.ndarray] = None,
+        res_vels: Optional[jnp.ndarray] = None,
         res_Ps: Optional[jnp.ndarray] = None,
         ref_poss: Optional[jnp.ndarray] = None,
         ref_vels: Optional[jnp.ndarray] = None,
@@ -154,89 +217,96 @@ class ParticleLoss:
         snapshot_mean: bool = True,
         particle_mean: bool = True,
         debug: bool = False,
-    ):
-
-        print("using particle loss")
+    ) -> jnp.ndarray:
+        print("Using particle loss")
 
         loss = 0.0
 
-        # position
+        # Position loss
         if self.w_pos > 0.0:
-            assert res_poss is not None and ref_poss is not None
-            print(f"w_pos = {self.w_pos}")
+            if res_poss is None or ref_poss is None:
+                raise ValueError("Position loss requires both res_poss and ref_poss")
+            print(f"w_pos = {self.w_pos}, loss = {self.loss_type}, scale = {self.robust_scale}")
 
+            # Compute distance with periodic boundary conditions
             dist = ((res_poss - ref_poss + self.mesh_per_dim // 2) % self.mesh_per_dim) - self.mesh_per_dim // 2
 
-            if self.huber:
-                pos_loss = self._huber_loss(dist)
-            else:
-                pos_loss = dist**2
+            # Apply selected robust loss component-wise, then sum over spatial dims
+            pos_loss = self._robust_loss(dist)
             pos_loss = jnp.sum(pos_loss, axis=-1)
 
             if self.cutoff_quantile is not None:
-                pos_loss = jnp.where(pos_loss < jnp.quantile(pos_loss, self.cutoff_quantile), pos_loss, 0.0)
+                cutoff = jnp.quantile(pos_loss, self.cutoff_quantile)
+                pos_loss = jnp.where(pos_loss < cutoff, pos_loss, 0.0)
+
             if self.w_snapshot > 0.0:
                 pos_loss *= self.w_snapshot
 
-            if particle_mean:
-                pos_loss = jnp.mean(pos_loss, axis=-1)
-            if snapshot_mean:
-                pos_loss = jnp.mean(pos_loss, axis=0)
+            pos_loss = self._apply_loss_reduction(pos_loss, particle_mean, snapshot_mean)
 
             if debug:
                 print(f"pos_loss = {self.w_pos * pos_loss}")
 
             loss += self.w_pos * pos_loss
 
-        # velocity
+        # Velocity loss
         if self.w_vel > 0.0:
-            assert res_vels is not None and ref_vels is not None
-            print(f"w_vel = {self.w_vel}")
+            if res_vels is None or ref_vels is None:
+                raise ValueError("Velocity loss requires both res_vels and ref_vels")
+            vel_robust_scale = 4 * self.robust_scale
+            print(f"w_vel = {self.w_vel}, loss = {self.loss_type}, scale = {vel_robust_scale}")
 
-            if self.huber:
-                vel_loss = self._huber_loss(res_vels - ref_vels)
-            else:
-                vel_loss = (res_vels - ref_vels) ** 2
+            vel_diff = res_vels - ref_vels
+            vel_loss = self._robust_loss(vel_diff, vel_robust_scale)
             vel_loss = jnp.sum(vel_loss, axis=-1)
 
+            # Apply cutoff and snapshot weighting
             if self.cutoff_quantile is not None:
-                vel_loss = jnp.where(vel_loss < jnp.quantile(vel_loss, self.cutoff_quantile), vel_loss, 0.0)
+                cutoff = jnp.quantile(vel_loss, self.cutoff_quantile)
+                vel_loss = jnp.where(vel_loss < cutoff, vel_loss, 0.0)
+
             if self.w_snapshot > 0.0:
                 vel_loss *= self.w_snapshot
 
-            if particle_mean:
-                vel_loss = jnp.mean(vel_loss, axis=-1)
-            if snapshot_mean:
-                vel_loss = jnp.mean(vel_loss, axis=0)
+            # Apply reduction
+            vel_loss = self._apply_loss_reduction(vel_loss, particle_mean, snapshot_mean)
 
             if debug:
                 print(f"vel_loss = {self.w_vel * vel_loss}")
 
             loss += self.w_vel * vel_loss
 
-        # two-point
+        # Two-point statistics loss
         if self.w_cls > 0.0 or self.w_cross > 0.0:
-            assert ref_deltas is not None
+            if res_poss is None:
+                raise ValueError("Two-point loss requires res_poss")
+            if ref_deltas is None:
+                raise ValueError("Two-point loss requires ref_deltas")
+
             loss += two_point_loss(
                 self.mesh_per_dim,
                 res_poss,
                 ref_cls,
                 ref_deltas,
-                self.w_cls,
-                self.w_cross,
-                self.w_snapshot,
-                self.eps,
-                self.weight_k,
-                debug,
+                w_cls=self.w_cls,
+                w_cross=self.w_cross,
+                w_snapshot=self.w_snapshot,
+                k_max=self.k_max,
+                k_type=self.k_type,
+                eps=self.eps,
+                debug=debug,
             )
 
-        # pressure
+        # Pressure loss
         if self.w_P > 0.0:
-            assert res_Ps is not None and ref_Ps is not None
+            if res_Ps is None or ref_Ps is None:
+                raise ValueError("Pressure loss requires both res_Ps and ref_Ps")
             print(f"w_P = {self.w_P}")
-            res_Ps = (res_Ps - jnp.mean(res_Ps)) / (jnp.std(res_Ps) + self.eps)
-            ref_Ps = (ref_Ps - jnp.mean(ref_Ps)) / (jnp.std(ref_Ps) + self.eps)
-            P_loss = jnp.mean((res_Ps - ref_Ps) ** 2)
+
+            # Standardize pressure fields
+            res_Ps_norm = (res_Ps - jnp.mean(res_Ps)) / (jnp.std(res_Ps) + self.eps)
+            ref_Ps_norm = (ref_Ps - jnp.mean(ref_Ps)) / (jnp.std(ref_Ps) + self.eps)
+            P_loss = jnp.mean((res_Ps_norm - ref_Ps_norm) ** 2)
 
             if debug:
                 print(f"P_loss = {self.w_P * P_loss}")
@@ -305,7 +375,7 @@ class FieldLoss:
             else:
                 field_loss = (res_deltas - ref_deltas) ** 2
 
-            field_loss = jnp.where(field_loss < jnp.quantile(field_loss, 0.95), field_loss, 0.0)
+            # field_loss = _smooth_quantile_downweight(field_loss, 0.95, self.eps)
 
             if snapshot_mean:
                 field_loss = jnp.mean(field_loss, axis=0)

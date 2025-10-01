@@ -75,7 +75,7 @@ def cic_read(mesh, positions):
     return (mesh[neighbor_coords[..., 0], neighbor_coords[..., 1], neighbor_coords[..., 2]] * kernel).sum(axis=-1)
 
 
-def cic_paint_2d(mesh, positions, weight):
+def cic_paint_2d(mesh, positions, weight=None):
     """Paints positions onto a 2d mesh
     mesh: [nx, ny]
     positions: [npart, 2]
