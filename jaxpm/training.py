@@ -72,17 +72,41 @@ def get_train_step(mesh_per_dim, cosmo, max_steps=1000):
         loss_fn,
         y0,
         t0,
+        # reference
         ref_t,
         ref_poss,
         ref_vels=None,
         ref_cls=None,
         ref_deltas=None,
+        # models
         gravity_model=None,
         pressure_model=None,
         species="gas",
+        # ode
         tstep=None,
         nt=2,
+        aug_key=None,
     ):
+        if aug_key is not None:
+            print("Applying augmentations (random flips and 90 degree rotations)")
+
+            # initial conditions
+            dm_aug = augmentations.rot_flip_3d(aug_key, mesh_per_dim, pos=y0[0], vel=y0[1])
+            if len(y0) == 2:
+                y0 = (dm_aug["pos"], dm_aug["vel"])
+            elif len(y0) == 4:
+                gas_aug = augmentations.rot_flip_3d(aug_key, mesh_per_dim, pos=y0[2], vel=y0[3])
+                y0 = (dm_aug["pos"], dm_aug["vel"], gas_aug["pos"], gas_aug["vel"])
+            else:
+                raise NotImplementedError("Augmentations for latent variables not implemented yet")
+
+            # reference
+            ref_poss = augmentations.rot_flip_3d(aug_key, mesh_per_dim, pos=ref_poss)["pos"]
+            if ref_vels is not None:
+                ref_vels = augmentations.rot_flip_3d(aug_key, mesh_per_dim, vel=ref_vels)["vel"]
+            if ref_deltas is not None:
+                ref_deltas = augmentations.rot_flip_3d(aug_key, mesh_per_dim, field=ref_deltas)["field"]
+
         # integrate
         res = solve_ode(y0, t0, ref_t, gravity_model, pressure_model, tstep=tstep, nt=nt)
         if species == "dm":
@@ -114,10 +138,10 @@ def get_train_step(mesh_per_dim, cosmo, max_steps=1000):
         ref_deltas=None,
         gravity_model=None,
         pressure_model=None,
-        tstep=None,
-        # static
-        nt=2,
         model_to_train="pressure",
+        tstep=None,
+        nt=2,
+        aug_key=None,
     ):
         """dynamic snapshot range as passed"""
 
@@ -138,6 +162,7 @@ def get_train_step(mesh_per_dim, cosmo, max_steps=1000):
                     species="gas",
                     tstep=tstep,
                     nt=nt,
+                    aug_key=aug_key,
                 )
 
             return train_step_base(pressure_model, optimizer, model_loss_fn)
@@ -159,6 +184,7 @@ def get_train_step(mesh_per_dim, cosmo, max_steps=1000):
                     species="dm",
                     tstep=tstep,
                     nt=nt,
+                    aug_key=aug_key,
                 )
 
             return train_step_base(gravity_model, optimizer, model_loss_fn)

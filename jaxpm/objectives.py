@@ -55,6 +55,7 @@ def two_point_loss(
     # power spectrum
     if w_cls > 0.0:
         print(f"w_cls = {w_cls}, k_max = {k_max}, k_type = {k_type}")
+        assert ref_cls is not None, "ref_cls required for power spectrum loss"
 
         kbins, res_cls = vpower_spectrum(res_deltas)
         cls_loss = (res_cls / jnp.maximum(ref_cls, eps) - 1) ** 2
@@ -89,6 +90,7 @@ def two_point_loss(
         # cross correlation
         if w_cross > 0.0:
             print(f"w_cross = {w_cross}")
+            assert ref_deltas is not None, "ref_deltas required for cross-correlation loss"
 
             kbins, res_cross = vcross_correlation(res_deltas, ref_deltas)
 
@@ -280,8 +282,6 @@ class ParticleLoss:
         if self.w_cls > 0.0 or self.w_cross > 0.0:
             if res_poss is None:
                 raise ValueError("Two-point loss requires res_poss")
-            if ref_deltas is None:
-                raise ValueError("Two-point loss requires ref_deltas")
 
             loss += two_point_loss(
                 self.mesh_per_dim,
