@@ -5,6 +5,8 @@ logs/
 *.png
 *.jpg
 wandb/
+checkpoints/
+checkpoints_backup/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
