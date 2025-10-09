@@ -177,7 +177,8 @@ class BaseModel(nnx.Module):
         graphdef, abstract_params = nnx.split(abstract_model)
 
         params = self.checkpointer.restore(checkpoint_file, abstract_params)
-        model = nnx.merge(graphdef, params)
+        # update in place
+        self.__dict__.update(nnx.merge(graphdef, params).__dict__)
         print(f"Checkpoint loaded from {checkpoint_file}")
 
     def save(self, checkpoint_file):
