@@ -83,7 +83,7 @@ def two_point_loss(
         cls_loss = jnp.mean(cls_loss)
 
         if debug:
-            print(f"cls_loss = {w_cls * cls_loss}")
+            print(f"cls_loss = {(w_cls * cls_loss):.4e}")
 
         loss += w_cls * cls_loss
 
@@ -92,21 +92,22 @@ def two_point_loss(
             print(f"w_cross = {w_cross}")
             assert ref_deltas is not None, "ref_deltas required for cross-correlation loss"
 
-            kbins, res_cross = vcross_correlation(res_deltas, ref_deltas)
-
+            _, res_cross = vcross_correlation(res_deltas, ref_deltas)
             cross_loss = (res_cross / jnp.sqrt(ref_cls * res_cls) - 1) ** 2
+
             if k_max is not None:
                 cross_loss *= k_weights
+
             cross_loss = jnp.sum(cross_loss, axis=-1)
             if w_snapshot > 0.0:
                 cross_loss *= w_snapshot
-            if not debug:
-                cross_loss = jnp.mean(cross_loss)
+            cross_loss = jnp.mean(cross_loss)
 
             if debug:
-                print(f"cross_loss = {w_cross * cross_loss}")
+                print(f"cross_loss = {(w_cross * cross_loss):.4e}")
 
             loss += w_cross * cross_loss
+
     elif w_cross > 0.0:
         raise ValueError("Cross-correlation loss is not supported without power spectrum loss.")
 
@@ -247,7 +248,7 @@ class ParticleLoss:
             pos_loss = self._apply_loss_reduction(pos_loss, particle_mean, snapshot_mean)
 
             if debug:
-                print(f"pos_loss = {self.w_pos * pos_loss}")
+                print(f"pos_loss = {(self.w_pos * pos_loss):.4e}")
 
             loss += self.w_pos * pos_loss
 
@@ -274,7 +275,7 @@ class ParticleLoss:
             vel_loss = self._apply_loss_reduction(vel_loss, particle_mean, snapshot_mean)
 
             if debug:
-                print(f"vel_loss = {self.w_vel * vel_loss}")
+                print(f"vel_loss = {(self.w_vel * vel_loss):.4e}")
 
             loss += self.w_vel * vel_loss
 
@@ -309,7 +310,7 @@ class ParticleLoss:
             P_loss = jnp.mean((res_Ps_norm - ref_Ps_norm) ** 2)
 
             if debug:
-                print(f"P_loss = {self.w_P * P_loss}")
+                print(f"P_loss = {(self.w_P * P_loss):.4e}")
 
             loss += self.w_P * P_loss
 
@@ -332,7 +333,8 @@ class FieldLoss:
         w_cls: float = 0.0,
         w_cross: float = 0.0,
         w_snapshot: float = 0.0,
-        weight_k: bool = True,
+        k_max: Optional[float] = None,
+        k_type: str = "step",
         use_arcsinh=False,
         eps: float = 1e-8,
     ) -> None:
@@ -344,8 +346,9 @@ class FieldLoss:
         self.w_cls = w_cls
         self.w_cross = w_cross
         self.w_snapshot = w_snapshot
+        self.k_max = k_max
+        self.k_type = k_type
         self.use_arcsinh = use_arcsinh
-        self.weight_k = weight_k
         self.eps = eps
 
     def __call__(
@@ -364,6 +367,7 @@ class FieldLoss:
 
         loss = 0.0
 
+        # Rho loss
         if self.w_field > 0.0:
             print(f"w_field = {self.w_field}")
 
@@ -375,33 +379,33 @@ class FieldLoss:
             else:
                 field_loss = (res_deltas - ref_deltas) ** 2
 
-            # field_loss = _smooth_quantile_downweight(field_loss, 0.95, self.eps)
-
             if snapshot_mean:
                 field_loss = jnp.mean(field_loss, axis=0)
             if field_mean:
                 field_loss = jnp.mean(field_loss)
 
-            # rho_loss /= jnp.maximum(scales.reshape(-1,1,1,1)**2, eps)
-
             if debug:
-                print(f"field_loss = {self.w_field * field_loss}")
+                print(f"field_loss = {(self.w_field * field_loss):.4e}")
 
             loss += self.w_field * field_loss
 
-        # two-point
+        # Two-point statistics loss
         if self.w_cls > 0.0 or self.w_cross > 0.0:
+            if res_poss is None:
+                raise ValueError("Two-point loss requires res_poss")
+
             loss += two_point_loss(
                 self.mesh_per_dim,
                 res_poss,
                 ref_cls,
                 ref_deltas,
-                self.w_cls,
-                self.w_cross,
-                self.w_snapshot,
-                self.eps,
-                self.weight_k,
-                debug,
+                w_cls=self.w_cls,
+                w_cross=self.w_cross,
+                w_snapshot=self.w_snapshot,
+                k_max=self.k_max,
+                k_type=self.k_type,
+                eps=self.eps,
+                debug=debug,
             )
 
         return loss

@@ -2,53 +2,6 @@ import jax
 import jax.numpy as jnp
 
 
-def _apply_field_transform(field, rot_z, rot_x, rot_y, flip_x, flip_y, flip_z):
-    """
-    Helper function to apply rotation and flip transformations to a 3D or 4D field.
-
-    Args:
-        field: 3D or 4D array to transform
-               - 3D: (nx, ny, nz)
-               - 4D: (n_time, nx, ny, nz)
-        rot_z, rot_x, rot_y: rotation parameters (0-3) for each axis
-        flip_x, flip_y, flip_z: boolean flip parameters for each axis
-
-    Returns:
-        Transformed field with same shape as input
-    """
-
-    offset = field.ndim - 3
-
-    # Define rotation axes for each rotation step
-    # For 3D: (0,1), (1,2), (0,2) for z, x, y rotations
-    # For 4D: (1,2), (2,3), (1,3) for z, x, y rotations
-    rotation_axes = [
-        (offset + 0, offset + 1),  # z-axis rotation (xy plane)
-        (offset + 1, offset + 2),  # x-axis rotation (yz plane)
-        (offset + 0, offset + 2),  # y-axis rotation (xz plane)
-    ]
-
-    # Apply rotations
-    for k, axes in zip([rot_z, rot_x, rot_y], rotation_axes):
-        field = jax.lax.switch(
-            k,
-            [
-                lambda x: x,  # k=0: no rotation
-                lambda x: jnp.rot90(x, k=1, axes=axes),  # k=1: 90°
-                lambda x: jnp.rot90(x, k=2, axes=axes),  # k=2: 180°
-                lambda x: jnp.rot90(x, k=3, axes=axes),  # k=3: 270°
-            ],
-            field,
-        )
-
-    # Apply flips
-    flip_axes = [offset + 0, offset + 1, offset + 2]  # x, y, z axes
-    for flip, axis in zip([flip_x, flip_y, flip_z], flip_axes):
-        field = jnp.where(flip, jnp.flip(field, axis=axis), field)
-
-    return field
-
-
 def _get_rotation_matrix(rot_z, rot_x, rot_y):
     """
     Compute the combined 3D rotation matrix from three sequential 90-degree rotations.
@@ -96,6 +49,53 @@ def _get_rotation_matrix(rot_z, rot_x, rot_y):
     R = R_y @ R_x @ R_z
 
     return R
+
+
+def _apply_field_transform(field, rot_z, rot_x, rot_y, flip_x, flip_y, flip_z):
+    """
+    Helper function to apply rotation and flip transformations to a 3D or 4D field.
+
+    The transformation mirrors the matrix-based particle transform so that
+    sampled field values remain aligned with rotated/flipped particle
+    positions.
+
+    Args:
+        field: 3D or 4D array to transform
+               - 3D: (nx, ny, nz)
+               - 4D: (n_time, nx, ny, nz)
+        rot_z, rot_x, rot_y: rotation parameters (0-3) for each axis
+        flip_x, flip_y, flip_z: boolean flip parameters for each axis
+
+    Returns:
+        Transformed field with same shape as input
+    """
+
+    offset = field.ndim - 3
+    spatial_shape = field.shape[offset:]
+
+    coords = jnp.moveaxis(jnp.indices(spatial_shape, dtype=jnp.int32), 0, -1)
+    coords = coords.reshape(-1, 3)
+
+    mesh = jnp.asarray(spatial_shape, dtype=jnp.int32).reshape(1, 3)
+    flips = jnp.asarray([flip_x, flip_y, flip_z]).reshape(1, 3)
+
+    # Undo flips to map back to original grid coordinates
+    coords = jnp.where(flips, jnp.mod(mesh - coords, mesh), coords)
+
+    # Undo rotations using the forward rotation matrix transpose relationship
+    R = _get_rotation_matrix(rot_z, rot_x, rot_y).astype(jnp.int32)
+    coords = coords @ R
+    coords = jnp.mod(coords, mesh)
+
+    coords = coords.reshape(spatial_shape + (3,))
+    xi = coords[..., 0]
+    yi = coords[..., 1]
+    zi = coords[..., 2]
+
+    index_prefix = (slice(None),) * offset
+    transformed = field[index_prefix + (xi, yi, zi)]
+
+    return transformed
 
 
 def _apply_position_transform(pos, mesh_per_dim, rot_z, rot_x, rot_y, flip_x, flip_y, flip_z):
