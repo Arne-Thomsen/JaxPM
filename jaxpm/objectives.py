@@ -4,34 +4,32 @@ import jax
 import jax.numpy as jnp
 from typing import Optional
 
-from jaxpm import data
+from jaxpm import utils
 from jaxpm.painting import cic_paint, cic_read, compensate_cic
-from jaxpm.utils import power_spectrum, cross_correlation_coefficients
 
+# hardcoded for CAMELS
 box_size = 25.0  # Mpc/h
 
 # vectorize over axis 0 of snapshots
 vcic_paint = jax.vmap(cic_paint, in_axes=(None, 0, None))
 vcic_read = jax.vmap(cic_read, in_axes=(0, 0))
 
-vpower_spectrum = jax.vmap(
-    lambda fields: power_spectrum(
-        compensate_cic(fields),
-        boxsize=np.array([box_size] * 3),
-        kmin=np.pi / box_size,
-        dk=2 * np.pi / box_size,
-    )
+power_spectrum = lambda field: utils.power_spectrum(
+    compensate_cic(field),
+    boxsize=np.array([box_size] * 3),
+    kmin=np.pi / box_size,
+    dk=2 * np.pi / box_size,
 )
+vpower_spectrum = jax.vmap(power_spectrum)
 
-vcross_correlation = jax.vmap(
-    lambda field_a, field_b: cross_correlation_coefficients(
-        compensate_cic(field_a),
-        compensate_cic(field_b),
-        boxsize=np.array([box_size] * 3),
-        kmin=np.pi / box_size,
-        dk=2 * np.pi / box_size,
-    )
+cross_correlation = lambda field_a, field_b: utils.cross_correlation_coefficients(
+    compensate_cic(field_a),
+    compensate_cic(field_b),
+    boxsize=np.array([box_size] * 3),
+    kmin=np.pi / box_size,
+    dk=2 * np.pi / box_size,
 )
+vcross_correlation = jax.vmap(cross_correlation)
 
 
 def two_point_loss(
@@ -49,7 +47,11 @@ def two_point_loss(
 ):
     loss = 0.0
 
-    res_rhos = vcic_paint(jnp.zeros([mesh_per_dim] * 3), res_poss, 1)
+    vmap_snapshots = res_poss.ndim == 3
+    if vmap_snapshots:
+        res_rhos = vcic_paint(jnp.zeros([mesh_per_dim] * 3), res_poss, 1)
+    else:
+        res_rhos = cic_paint(jnp.zeros([mesh_per_dim] * 3), res_poss, 1)
     res_deltas = res_rhos / res_rhos.mean() - 1
 
     # power spectrum
@@ -57,11 +59,15 @@ def two_point_loss(
         print(f"w_cls = {w_cls}, k_max = {k_max}, k_type = {k_type}")
         assert ref_cls is not None, "ref_cls required for power spectrum loss"
 
-        kbins, res_cls = vpower_spectrum(res_deltas)
+        if vmap_snapshots:
+            kbins, res_cls = vpower_spectrum(res_deltas)
+            k = kbins[0]
+        else:
+            kbins, res_cls = power_spectrum(res_deltas)
+            k = kbins
         cls_loss = (res_cls / jnp.maximum(ref_cls, eps) - 1) ** 2
 
         if k_max is not None:
-            k = kbins[0]
             k_min = k[0]
             if k_type == "step":
                 k_weights = jnp.where(k < k_max, 1.0, 0.0)
@@ -92,7 +98,10 @@ def two_point_loss(
             print(f"w_cross = {w_cross}")
             assert ref_deltas is not None, "ref_deltas required for cross-correlation loss"
 
-            _, res_cross = vcross_correlation(res_deltas, ref_deltas)
+            if vmap_snapshots:
+                _, res_cross = vcross_correlation(res_deltas, ref_deltas)
+            else:
+                _, res_cross = cross_correlation(res_deltas, ref_deltas)
             cross_loss = (res_cross / jnp.sqrt(ref_cls * res_cls) - 1) ** 2
 
             if k_max is not None:
