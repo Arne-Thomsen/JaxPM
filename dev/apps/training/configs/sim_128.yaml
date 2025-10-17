@@ -1,0 +1,5 @@
+parts_per_dim: 128
+mesh_per_dim: 128
+i0: 0
+nt: 2
+i_plot: [0, 11, 22, 33]

@@ -1,0 +1,24 @@
+name: 64_v1
+method: random
+metric:
+  name: train/loss
+  goal: minimize
+parameters:
+  architecture:
+    values: [mlp, cnn]
+  with_latent:
+    value: false
+  n_steps:
+    value: 300
+  learning_rate:
+    distribution: log_uniform_values
+    min: 1.0e-5
+    max: 1.0e-3
+  n_hidden:
+    values: [2, 4, 6, 8]
+  d_hidden:
+    values: [8, 16, 32, 64, 128]
+  kernel_size:
+    values: [3, 5]
+  activation:
+    values: [relu, swish]
