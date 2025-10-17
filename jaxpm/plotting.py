@@ -105,7 +105,7 @@ def compare_field_evolution(
     title=None,
     col_titles=None,
     cmap="magma",
-    out_dir=None,
+    out_file=None,
 ):
     n_scales = len(scales)
     n_runs = len(fields)
@@ -227,8 +227,8 @@ def compare_field_evolution(
     if title is not None:
         fig.suptitle(title, fontsize=16, y=1.05)
 
-    if out_dir is not None:
-        plt.savefig(out_dir + ".png", dpi=100, bbox_inches="tight")
+    if out_file is not None:
+        plt.savefig(out_file + ".png", dpi=100, bbox_inches="tight")
 
 
 def compare_particle_evolution(
@@ -249,7 +249,7 @@ def compare_particle_evolution(
     title=None,
     col_titles=None,
     cmap="magma",
-    out_dir=None,
+    out_file=None,
 ):
     assert 3 == len(mesh_shape) == positions[0].shape[-1]
     assert not (shared_colorbar and individual_colorbars)
@@ -401,8 +401,8 @@ def compare_particle_evolution(
     if title is not None:
         fig.suptitle(title, fontsize=16, y=1.05)
 
-    if out_dir is not None:
-        plt.savefig(out_dir + ".png", dpi=100, bbox_inches="tight")
+    if out_file is not None:
+        plt.savefig(out_file + ".png", dpi=100, bbox_inches="tight")
 
 
 def plot_gas_features(
