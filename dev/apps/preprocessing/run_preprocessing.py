@@ -1,7 +1,7 @@
-import os, argparse, time, h5py
+import os, argparse, h5py
 
 os.environ["JAX_PLATFORMS"] = "cpu"
-import numpy as np
+os.environ["JAX_PLATFORMS_NAME"] = "cpu"
 
 from tqdm import tqdm
 from jaxpm import camels, data
@@ -12,8 +12,10 @@ def resources(args):
         "main_time": 4,
         "main_memory": 4096,
         "main_n_cores": 4,
+        "main_scratch": 0,
         "merge_time": 4,
         "merge_n_cores": 4,
+        "merge_scratch": 0,
     }
 
     return resources
@@ -57,6 +59,7 @@ def setup(args):
 def main(indices, args):
     args = setup(args)
 
+    # each index corresponds to one CV cosmology
     for index in indices:
         CV = os.path.join(args.camels_cv_dir, f"CV_{index}")
 
