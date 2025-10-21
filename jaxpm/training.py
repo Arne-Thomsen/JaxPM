@@ -9,7 +9,7 @@ from jaxpm import hpm, utils, augmentations
 
 def get_ode_solver(mesh_per_dim, cosmo, max_steps=1000):
 
-    def solve_ode(y0, t0, tsave, gravity_model, pressure_model, training=True, dt0=None, nt=2, tstep=None):
+    def solve_ode(y0, t0, tsave, gravity_model=None, pressure_model=None, training=True, dt0=None, nt=2, tstep=None):
         ode = ODETerm(
             hpm.get_hpm_network_ode_fn(
                 mesh_per_dim,

@@ -1,0 +1,10 @@
+architecture: cnn
+with_latent: false
+n_steps: 2000
+cosine_decay: false
+optimizer: adamw
+learning_rate: 5.0e-5
+d_hidden: 16
+n_hidden: 8
+kernel_size: 3
+activation: swish

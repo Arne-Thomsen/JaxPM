@@ -11,10 +11,10 @@ def resources(args):
     resources = {
         "main_time": 4,
         "main_memory": 4096,
-        "main_n_cores": 4,
+        "main_n_cores": 8,
         "main_scratch": 0,
         "merge_time": 4,
-        "merge_n_cores": 4,
+        "merge_n_cores": 8,
         "merge_scratch": 0,
     }
 

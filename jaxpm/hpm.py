@@ -152,9 +152,8 @@ def hpm_forces(
 
             if gas_latent is None:
                 print("No latent variable")
-                # gas_U = jnp.exp(jnp.squeeze(gas_preds))
-                # gas_P = gas_U * gas_rho
-                gas_P = 10 ** jnp.squeeze(gas_preds)
+                gas_U = jnp.exp(jnp.squeeze(gas_preds))
+                gas_P = gas_U * gas_rho
             else:
                 print(f"With latent variable")
                 # gas_U, d_gas_latent = jnp.exp(gas_preds[:, 0]), jnp.sinh(gas_preds[:, 1:])
@@ -284,6 +283,8 @@ def get_hpm_network_ode_fn(
             dy = d_dm_pos, d_dm_vel, d_gas_pos, d_gas_vel
         elif len(state) == 5:
             dy = d_dm_pos, d_dm_vel, d_gas_pos, d_gas_vel, d_gas_latent
+        else:
+            raise ValueError(f"Unknown state shape {state.shape}")
 
         return dy
 

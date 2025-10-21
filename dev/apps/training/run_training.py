@@ -7,6 +7,12 @@ python run_training.py \
     --loss_config configs/loss.yaml \
     --use_wandb
 
+python run_training.py \
+    --hparams_config configs/hparams_cnn_128.yaml \
+    --sim_config configs/sim_128.yaml \
+    --loss_config configs/particle_loss.yaml \
+    --use_wandb
+
 Usage with wandb sweep (sweep name defined in hparams_sweep.yaml):
 python run_training.py \
     --hparams_sweep_config configs/hparams_sweep.yaml \
@@ -293,7 +299,24 @@ def create_pressure_model(hparams: Dict[str, Any]) -> ConditionedCNN:
 
 def create_optimizer(hparams: Dict[str, Any]) -> optax.GradientTransformation:
     """Create the optimizer."""
-    return optax.chain(optax.clip_by_global_norm(1.0), optax.adam(hparams["learning_rate"]))
+
+    learning_rate = hparams["learning_rate"]
+
+    if hparams["cosine_decay"]:
+        n_steps = hparams["n_steps"]
+        learning_rate = optax.cosine_decay_schedule(
+            init_value=learning_rate,
+            decay_steps=n_steps,
+            alpha=0.0,
+        )
+
+    optimizer = hparams["optimizer"]
+    if hparams["optimizer"] == "adam":
+        optimizer = optax.adam
+    elif hparams["optimizer"] == "adamw":
+        optimizer = optax.adamw
+
+    return optax.chain(optax.clip_by_global_norm(1.0), optimizer(learning_rate))
 
 
 def initialize_wandb(
@@ -403,6 +426,8 @@ if __name__ == "__main__":
                 k: get_config_value(config_source, k)
                 for k in [
                     "activation",
+                    "architecture",
+                    "cosine_decay",
                     "d_hidden",
                     "n_hidden",
                     "kernel_size",

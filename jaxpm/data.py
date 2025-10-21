@@ -8,7 +8,8 @@ from jaxpm.kernels import fftk, invnabla_kernel, invlaplace_kernel, gradient_ker
 
 def get_offline_regression_data(
     snapshot_dict,
-    x_labels=["rho", "fscalar", "vel_disp", "vel_div", "tidal_eigval"],
+    x_labels=["rho", "fscalar", "vel_disp", "vel_div"],
+    # x_labels=["rho", "fscalar", "vel_disp", "vel_div", "tidal_eigval"],
     y_labels=["P", "U", "T"],
     include_scale=True,
     include_latent=False,
