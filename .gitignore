@@ -7,7 +7,6 @@ logs/
 wandb/
 checkpoints/
 checkpoints_backup/
-sweeps/
 esub_logs/
 
 # Byte-compiled / optimized / DLL files

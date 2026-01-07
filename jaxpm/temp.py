@@ -1,38 +1,73 @@
-# Now let's compute 2pt stats
-_, pk_egd = power_spectrum(
-    compensate_cic(tot_delta_egd), boxsize=np.array([25.0] * 3), kmin=np.pi / 25.0, dk=2 * np.pi / 25.0
-)
+cv_dir = "/pscratch/sd/a/athomsen/flatiron/CAMELS/Sims/SIMBA/CV"
+i0 = 0
+i1 = -1
 
-_, xpk_egd = cross_correlation_coefficients(
-    compensate_cic(tot_delta_hydro),
-    compensate_cic(tot_delta_egd),
-    boxsize=np.array([25.0] * 3),
-    kmin=np.pi / 25.0,
-    dk=2 * np.pi / 25.0,
-)
+all_ref_pk = []
+all_pm_pk = []
+all_hpm_pk = []
+all_egd_pk = []
 
-fig, ax = plt.subplots(figsize=[13, 5], ncols=2)
+all_res_pk = []
+all_res_cross = []
+for i in tqdm(range(3)):
+    sim_file = os.path.join(cv_dir, f"CV_{i}", f"parts={parts_per_dim},mesh={mesh_per_dim}.h5")
 
-ax[0].axhline(1.0, color="black")
-ax[0].semilogx(k, (pk_dmo / pk_hydro), label="DMO")
-ax[0].semilogx(k, (pk_egd / pk_hydro), label="DMO+EGD")
-ax[0].set(
-    xlabel=r"$k$ [$h \ \mathrm{Mpc}^{-1}$]",
-    ylabel=r"$ P^{DMO}(k) \ / \ P^{Hydro}(k)$",
-    xlim=(0.1, 15),
-    ylim=(0.0, 1.5),
-)
-ax[0].grid(True)
-ax[0].legend()
+    # ref
+    with h5py.File(sim_file) as f:
+        i_snap = (i0, i1)
+        
+        scales = f["scales"][:]
+        dm_poss = f["dm_poss"][i_snap, ...]
+        dm_vels = f["dm_vels"][i_snap, ...]
+        gas_poss = f["gas_poss"][i_snap, ...]
+        gas_vels = f["gas_vels"][i_snap, ...]
 
-ax[1].axhline(1.0, color="black")
-ax[1].semilogx(k, xpk / (jnp.sqrt(pk_dmo) * jnp.sqrt(pk_hydro)), label="DMO")
-ax[1].semilogx(k, xpk_egd / (jnp.sqrt(pk_egd) * jnp.sqrt(pk_hydro)), label="DMO+EGD")
-ax[1].set(
-    xlabel=r"$k$ [$h \ \mathrm{Mpc}^{-1}$]",
-    ylabel=r"$ P_{cross}(k) \ / \sqrt{ P^{DMO}(k) \ P^{Hydro}(k)}$",
-    xlim=(0.1, 15),
-    ylim=(0.95, 1.05),
-)
-ax[1].grid()
-ax[1].legend()
+    ref_pos = gas_poss[1]
+    ref_pk = get_pk(ref_pos)
+    all_ref_pk.append(ref_pk)
+        
+    y0 = (dm_poss[0], dm_vels[0], gas_poss[0], gas_vels[0])
+    t0 = scales[i0]
+    tsave = [scales[i1]]
+
+    # pm
+    pm_res = solve_ode(
+        y0, 
+        t0, 
+        tsave, 
+        pressure_model=None, 
+        training=False, 
+        nt=1, 
+        tstep=scales
+    )
+    pm_pk = get_pk(pm_res[2])
+    pm_x = get_cross(
+    
+
+    # hpm
+    hpm_res = solve_ode(
+        y0, 
+        t0, 
+        tsave, 
+        pressure_model=pressure_model, 
+        training=False, 
+        nt=1, 
+        tstep=scales
+    )
+
+    ref_pos = gas_poss[1]
+    res_pos = res[2]
+    
+    k, ref_pk = get_pk(ref_pos)
+    _, res_pk = get_pk(res_pos)
+    _, res_cross = get_cross(res_pos, ref_pos)
+
+    
+    all_ref_pk.append(ref_pk)
+    all_res_pk.append(res_pk)
+    all_res_cross.append(res_cross)
+
+
+all_ref_pk = jnp.stack(all_ref_pk)
+all_res_pk = jnp.stack(all_res_pk)
+all_res_cross = jnp.stack(all_res_cross)

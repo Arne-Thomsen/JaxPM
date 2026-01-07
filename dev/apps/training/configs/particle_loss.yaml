@@ -3,7 +3,7 @@ type: "particle"
 w_pos: 1.0
 w_vel: 0.01
 w_cls: 0.1
-w_cross: 1.0
+w_cross: 0.0
 w_snapshot: 0.0
 k_max: 2
 loss_type: "huber"

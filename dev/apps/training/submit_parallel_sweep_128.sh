@@ -2,7 +2,7 @@
 #SBATCH --account=m5030_g
 #SBATCH --constraint=gpu&hbm80g
 #SBATCH --qos=regular
-#SBATCH --time=04:00:00
+#SBATCH --time=08:00:00
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=4          
 #SBATCH --ntasks-per-node=4        
@@ -13,7 +13,7 @@
 
 # Create the sweep once and get its ID
 echo "Creating wandb sweep..."
-SWEEP_ID=$(python create_sweep.py configs/hparams_sweep_128.yaml JaxHPM)
+SWEEP_ID=$(python create_sweep.py configs/hparams_sweep_128_cnn.yaml JaxHPM)
 
 if [ -z "$SWEEP_ID" ]; then
     echo "Error: Failed to create sweep"
@@ -25,7 +25,7 @@ echo "View sweep at: https://wandb.ai/eth-cosmo/JaxHPM/sweeps/$SWEEP_ID"
 
 srun --cpu-bind=threads --gpu-bind=single:1 \
     python run_training.py \
-        --sweep_name "128_v1" \
+        --sweep_name "128_cnn_v1" \
         --sweep_id $SWEEP_ID \
         --sim_config configs/sim_128.yaml \
         --loss_config configs/particle_loss.yaml \

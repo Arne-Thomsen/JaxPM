@@ -1,0 +1,8 @@
+architecture: cnn
+with_latent: false
+n_steps: 100
+learning_rate: 1.0e-4
+d_hidden: 64
+n_hidden: 4
+kernel_size: 3
+activation: swish
